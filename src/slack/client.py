@@ -1,0 +1,170 @@
+"""Thin wrapper around the Slack WebClient with structured return types."""
+
+from __future__ import annotations
+
+import logging
+
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+
+logger = logging.getLogger(__name__)
+
+
+class SlackClient:
+    """Wraps slack_sdk.WebClient with higher-level helpers used by the bot."""
+
+    def __init__(self, bot_token: str) -> None:
+        self._client = WebClient(token=bot_token)
+        self._bot_user_id: str | None = None
+
+    # ── Messages ──────────────────────────────────────────────────────────────
+
+    def get_message(self, channel: str, ts: str) -> dict | None:
+        """Fetch the Slack message identified by *channel* + *ts*.
+
+        Handles both top-level messages and replies inside threads:
+        if the message has a ``thread_ts`` that differs from its own ``ts``,
+        we fetch the full thread and locate the reply by its ``ts``.
+        """
+        # First, try fetching as a top-level message.
+        message = self._fetch_top_level(channel, ts)
+        if message is None:
+            # conversations_history only returns top-level messages.
+            # If the reacted message is a thread reply, fall back to reactions.get
+            # which works for both top-level messages and thread replies.
+            message = self._fetch_via_reactions(channel, ts)
+        if message is None:
+            return None
+
+        thread_ts = message.get("thread_ts")
+        if thread_ts and thread_ts != ts:
+            # The message is a thread reply — re-fetch it from the thread context
+            # to get the full reply object with threading metadata.
+            reply = self._fetch_thread_reply(channel, thread_ts, ts)
+            if reply:
+                return reply
+
+        return message
+
+    def _fetch_top_level(self, channel: str, ts: str) -> dict | None:
+        try:
+            response = self._client.conversations_history(
+                channel=channel,
+                latest=ts,
+                oldest=ts,
+                inclusive=True,
+                limit=1,
+            )
+            messages = response.get("messages", [])
+            return messages[0] if messages else None
+        except SlackApiError as exc:
+            logger.error("Failed to fetch message %s in %s: %s", ts, channel, exc)
+            return None
+
+    def _fetch_via_reactions(self, channel: str, ts: str) -> dict | None:
+        """Fetch a message using reactions.get — works for thread replies too."""
+        try:
+            response = self._client.reactions_get(channel=channel, timestamp=ts, full=True)
+            return response.get("message")
+        except SlackApiError as exc:
+            logger.error(
+                "Failed to fetch message via reactions.get %s in %s: %s", ts, channel, exc
+            )
+            return None
+
+    def _fetch_thread_reply(
+        self, channel: str, thread_ts: str, reply_ts: str
+    ) -> dict | None:
+        try:
+            response = self._client.conversations_replies(
+                channel=channel,
+                ts=thread_ts,
+                inclusive=True,
+            )
+            for msg in response.get("messages", []):
+                if msg.get("ts") == reply_ts:
+                    return msg
+            return None
+        except SlackApiError as exc:
+            logger.error(
+                "Failed to fetch thread reply %s in %s: %s", reply_ts, channel, exc
+            )
+            return None
+
+    # ── Users ─────────────────────────────────────────────────────────────────
+
+    def get_user_info(self, user_id: str) -> dict:
+        """Return a dict with ``id``, ``name``, and ``email`` for *user_id*.
+
+        Falls back gracefully when the API call fails or the user is not found.
+        """
+        try:
+            response = self._client.users_info(user=user_id)
+            user = response["user"]
+            profile = user.get("profile", {})
+            return {
+                "id": user_id,
+                "name": user.get("real_name") or user.get("name") or user_id,
+                "email": profile.get("email"),
+            }
+        except SlackApiError as exc:
+            logger.warning("Could not fetch user info for %s: %s", user_id, exc)
+            return {"id": user_id, "name": user_id, "email": None}
+
+    def get_bot_user_id(self) -> str:
+        """Return the bot's own Slack user ID (cached after the first call)."""
+        if self._bot_user_id is None:
+            try:
+                response = self._client.auth_test()
+                self._bot_user_id = response["user_id"]
+            except SlackApiError as exc:
+                logger.error("auth_test failed: %s", exc)
+                self._bot_user_id = ""
+        return self._bot_user_id
+
+    # ── Channels ──────────────────────────────────────────────────────────────
+
+    def get_channel_name(self, channel: str) -> str:
+        """Return the human-readable channel name, falling back to the ID."""
+        try:
+            response = self._client.conversations_info(channel=channel)
+            return response["channel"].get("name", channel)
+        except SlackApiError as exc:
+            logger.warning("Could not fetch channel name for %s: %s", channel, exc)
+            return channel
+
+    # ── Reactions ─────────────────────────────────────────────────────────────
+
+    def add_reaction(self, channel: str, ts: str, emoji: str) -> bool:
+        """Add *emoji* reaction to a message. Returns True on success or if already
+        reacted (idempotent). Returns False on other API errors."""
+        try:
+            self._client.reactions_add(channel=channel, timestamp=ts, name=emoji)
+            return True
+        except SlackApiError as exc:
+            if exc.response.get("error") == "already_reacted":
+                return True  # treat as success — idempotent
+            logger.warning("Failed to add reaction '%s' to %s: %s", emoji, ts, exc)
+            return False
+
+    def has_bot_reaction(self, channel: str, ts: str, emoji: str) -> bool:
+        """Return True if the bot has already added *emoji* to the message.
+
+        Used as an idempotency guard to avoid duplicate task creation.
+        """
+        bot_user_id = self.get_bot_user_id()
+        if not bot_user_id:
+            return False
+        try:
+            response = self._client.reactions_get(
+                channel=channel, timestamp=ts, full=True
+            )
+            message = response.get("message", {})
+            for reaction in message.get("reactions", []):
+                if reaction["name"] == emoji:
+                    return bot_user_id in reaction.get("users", [])
+        except SlackApiError as exc:
+            logger.warning(
+                "Could not check existing reactions on %s: %s", ts, exc
+            )
+        return False

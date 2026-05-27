@@ -1,0 +1,238 @@
+# ─── Database ────────────────────────────────────────────────────────────────
+database:
+  path: slack_to_notion.db   # path to the SQLite file (relative to cwd or absolute)
+
+# ─── Slack ────────────────────────────────────────────────────────────────────
+slack:
+  bot_token: ${SLACK_BOT_TOKEN}
+  app_token: ${SLACK_APP_TOKEN}   # xapp-... token for Socket Mode
+
+# ─── Notion ───────────────────────────────────────────────────────────────────
+notion:
+  token: ${NOTION_TOKEN}
+
+# ─── Allowed reactors ─────────────────────────────────────────────────────────
+# Slack user IDs whose reactions are allowed to trigger task creation.
+# Reactions from any user NOT in this list are silently ignored.
+# Omit the key entirely (or set to []) to allow all users to trigger reactions.
+# Find Slack user IDs in the Slack app: Profile → ⋮ → Copy member ID.
+allowed_reactors:
+  - "USLACKUSERID1"   # person 1
+  - "USLACKUSERID2"   # person 2
+  - "USLACKUSERID3"   # person 3
+  - "USLACKUSERID4"   # person 4
+
+# ─── Slack → Notion user mapping ──────────────────────────────────────────────
+# Maps Slack user IDs to Notion user UUIDs.
+# Used to populate the "Assignee" field (message author) in Notion.
+# Leave empty ({}) if you don't need assignee mapping.
+# Find Notion user IDs via: GET https://api.notion.com/v1/users
+users:
+  USLACKUSERID1: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  USLACKUSERID2: "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+  USLACKUSERID3: "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"
+  USLACKUSERID4: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+# ─── Emoji → Action mappings ──────────────────────────────────────────────────
+# Each entry defines what happens when a specific emoji reaction is added.
+# Multiple emojis can route to different Notion databases with different settings.
+#
+# Per-emoji optional overrides:
+#   task_title_template   — overrides the global template for this emoji only
+#   body_header_template  — overrides the global body header for this emoji only
+#   reactor_assignees     — map Slack user IDs to Notion user UUIDs based on who
+#                           reacted. Use "default" as a fallback for unmapped reactors.
+#                           Falls back to the global users: mapping when absent entirely.
+#
+# reactor_assignees example:
+#   reactor_assignees:
+#     USLACKUSERID1:                   # if this person reacts…
+#       notion_user_ids:
+#         - "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"   # …assign these Notion users
+#         - "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+#     USLACKUSERID2:
+#       notion_user_ids: []            # …assign nobody
+#     default:
+#       notion_user_ids:
+#         - "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"  # everyone else → assign this person
+emoji_mappings:
+  - emoji: "face_with_monocle"                       # 🧐 — send to review queue
+    notion_db: ${NOTION_DB_REVIEW}
+    task_type: "Review"
+    priority: "Medium"
+    processor: "TaskProcessor"
+    task_title_template: "[Slack] {task_title} — {channel_name}"
+    body_header_template: |-
+      Reporter: {reporter_name} | Channel: #{channel_name}
+      {message_text}
+
+      {slack_url}
+    reactor_assignees:
+      USLACKUSERID1:                   # person 1
+        notion_user_ids:
+          - "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      USLACKUSERID2:                   # person 2
+        notion_user_ids:
+          - "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+      USLACKUSERID3:                   # person 3
+        notion_user_ids:
+          - "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"
+      USLACKUSERID4:                   # person 4
+        notion_user_ids:
+          - "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+      default:
+        notion_user_ids: ["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"]   # fallback assignee
+
+  # ── Optional: route a specific emoji to a specific person ────────────────────
+  # Useful for "assign to me" personal emoji shortcuts.
+  - emoji: "team-member-1"                           # custom emoji for person 1
+    notion_db: ${NOTION_DB_REVIEW}
+    task_type: "Review"
+    priority: "Medium"
+    processor: "TaskProcessor"
+    task_title_template: "[Slack] {task_title} — {channel_name}"
+    body_header_template: |-
+      Reporter: {reporter_name} | Channel: #{channel_name}
+      {message_text}
+
+      {slack_url}
+    reactor_assignees:
+      default:
+        notion_user_ids: ["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"]
+
+  - emoji: "team-member-2"                           # custom emoji for person 2
+    notion_db: ${NOTION_DB_REVIEW}
+    task_type: "Review"
+    priority: "Medium"
+    processor: "TaskProcessor"
+    task_title_template: "[Slack] {task_title} — {channel_name}"
+    body_header_template: |-
+      Reporter: {reporter_name} | Channel: #{channel_name}
+      {message_text}
+
+      {slack_url}
+    reactor_assignees:
+      default:
+        notion_user_ids: ["yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"]
+
+  #- emoji: "clipboard"                               # 📋  — create a task
+  #  notion_db: ${NOTION_DB_TASKS}
+  #  task_type: "Task"
+  #  priority: "High"
+  #  processor: "TaskProcessor"
+
+  #- emoji: "fire"                                    # 🔥  — urgent task
+  #  notion_db: ${NOTION_DB_TASKS}
+  #  task_type: "Task"
+  #  priority: "Urgent"
+  #  processor: "TaskProcessor"
+
+# ─── Field extraction & mapping ───────────────────────────────────────────────
+fields:
+  parse_due_date: true          # Scan message text for date/time mentions
+  default_status: "Not started" # Default Notion status value
+  include_channel: true
+  include_reporter: true
+  include_assignee: true
+
+  # ── Title template ───────────────────────────────────────────────────────────
+  # Compose the Notion page title using {placeholder} syntax.
+  # Falls back to the first 100 characters of message_text when not set.
+  # Missing keys render as an empty string — no errors.
+  # Per-emoji mappings can override this with their own task_title_template.
+  #
+  # task_title_template: "[{task_type}] {task_title}"
+
+  # ── Body header template ─────────────────────────────────────────────────────
+  # Rendered as a text block at the top of the Notion page body.
+  # Uses the same {placeholder} syntax as task_title_template.
+  # Per-emoji mappings can override this with their own body_header_template.
+  #
+  # body_header_template: |-
+  #   Reporter: {reporter_name} | Channel: #{channel_name}
+  #   Priority: {priority} | Type: {task_type}
+  #   {message_text}
+
+  # ── Body fields ──────────────────────────────────────────────────────────────
+  # Defines rows in a two-column "Field | Value" table added to the Notion page body.
+  # Each 'key' must match one of the available context keys listed below.
+  # 'extract_pattern' is an optional Python regex; if provided, capturing group 1
+  # is taken from the Slack message text and stored under that key (overrides the
+  # default context value). Fields with no match appear as empty rows for manual
+  # filling in Notion.
+  #
+  # Available context keys (also usable as {placeholder} in templates above):
+  #   task_title       — first 100 chars of the message (or rendered title template)
+  #   message_text     — full Slack message text
+  #   slack_url        — deep link to the original Slack message
+  #   reporter_name    — display name of the person who added the reaction
+  #   assignee_notion_id — Notion user UUID of the message author (if mapped)
+  #   channel_name     — Slack channel name
+  #   status           — default status value from fields.default_status
+  #   priority         — value from emoji_mappings[].priority
+  #   task_type        — value from emoji_mappings[].task_type
+  #   due_date         — ISO 8601 date parsed from message text (if parse_due_date: true)
+  #
+  # body_fields:
+  #   - key: reporter_name
+  #     label: "Reporter"
+  #   - key: channel_name
+  #     label: "Channel"
+  #   - key: priority
+  #     label: "Priority"
+  #   - key: task_type
+  #     label: "Type"
+  #   - key: due_date
+  #     label: "Due Date"
+  #   - key: status
+  #     label: "Status"
+  #   - key: message_text
+  #     label: "Message"
+
+  # Maps Slack-extracted data to Notion page properties.
+  # Key   = exact Notion property name (must exist in your DB)
+  # type  = Notion property type (title, rich_text, url, select, status,
+  #          multi_select, date, number, checkbox, people)
+  # source = context key  OR  "literal:<hardcoded value>"
+  #
+  # Available context keys:
+  #   task_title, slack_url, reporter_name, assignee_notion_id,
+  #   status, priority, task_type, due_date, channel_name, message_text
+  #   + any key defined in body_fields above
+  notion_fields:
+    Name:
+      type: title
+      source: task_title
+    Status:
+      type: status
+      source: "literal:Not started"
+    Tags:
+      type: multi_select
+      source: "literal:from_Slack"
+    #Type:
+    #  type: multi_select
+    #  source: task_type           # value comes from emoji_mappings[].task_type
+    #Tags:
+    #  type: multi_select
+    #  source: "literal:from_Slack"
+    "URL":
+      type: url
+      source: slack_url
+    #Reporter:
+    #  type: rich_text
+    #  source: reporter_name
+    Assigned:
+      type: people
+      source: assignee_notion_id  # requires entry in the users: section above
+    #"Due Date":
+    #  type: date
+    #  source: due_date
+    #Channel:
+    #  type: rich_text
+    #  source: channel_name
+
+# ─── Confirmation behaviour ───────────────────────────────────────────────────
+confirmation:
+  react_with: "comet"   # emoji added to the message after task is created
+  # Also guards against duplicate processing: if this reaction already exists
+  # on a message, the bot will skip re-creating the task.

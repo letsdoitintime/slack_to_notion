@@ -1,0 +1,50 @@
+# ─── Secrets & credentials ────────────────────────────────────────────────────
+.env
+.env.*.local
+
+# ─── Real config (contains org-specific IDs and user mappings) ────────────────
+# Commit config/config.yaml.example instead — copy it to config/config.yaml locally.
+config/config.yaml
+
+# ─── Runtime data ─────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+bot.log
+*.log
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# ─── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ─── Test caches ──────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ─── Build / packaging ────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ─── IDEs / editors ───────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ─── Misc artefacts ───────────────────────────────────────────────────────────
+=*
