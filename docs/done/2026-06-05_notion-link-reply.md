@@ -87,3 +87,29 @@ README Bot Token Scopes table: add `| chat:write | Post the Notion task link bac
 ## Verify
 `python -m pytest -q` (venv python, asyncio_mode=auto). Config sanity:
 `python -c "from src.utils.config_loader import load_config; load_config('config/config.yaml')"`.
+
+---
+
+## Result
+
+**Status:** ✅ Complete — 2026-06-05
+
+### What shipped
+After a configured emoji reaction creates a Notion task, the bot now posts a threaded Slack reply with the task link — but **only** in channels listed in `config.yaml`'s `notion_link_reply.channels`. Currently enabled for `C05LY9SDVRP`. The feature is inert-by-default: absent or disabled config → nothing posted; a failed post cannot fail task creation.
+
+### Files changed
+- `src/slack/client.py` — `post_message(channel, text, thread_ts, broadcast) -> bool`
+- `src/processors/task_processor.py` — gated reply block + `_escape_slack_mrkdwn()` helper; reuses `_render_template`
+- `src/utils/config_loader.py` — `_validate_notion_link_reply()`
+- `config/config.yaml` — live `notion_link_reply` section (enabled, `C05LY9SDVRP`)
+- `config/config.yaml.example` — documented section with placeholder reference
+- `README.md` — `chat:write` added to Bot Token Scopes table
+- `tests/test_task_processor.py` — 9 new tests (post fires, skips, thread anchoring, broadcast, best-effort, escaping)
+- `tests/test_config_loader.py` — 4 new validation tests
+
+### Verify results
+`python -m pytest -q` → **135 passed in 0.87s**
+
+### Still to decide / ops
+- Add `chat:write` scope to the Slack app (OAuth & Permissions) and reinstall — the bot logs a clear `missing_scope` warning if the scope is missing, but the reply won't post until then.
+- To add more channels later, append their IDs to `notion_link_reply.channels` in `config/config.yaml`.

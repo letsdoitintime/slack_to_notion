@@ -25,18 +25,6 @@ from src.processors.task_processor import (
 from src.utils.user_mapper import UserMapper
 
 
-async def _run_to_thread_synchronously(func, /, *args, **kwargs):
-    return func(*args, **kwargs)
-
-
-@pytest.fixture(autouse=True)
-def run_processor_to_thread_synchronously(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "src.processors.task_processor.asyncio.to_thread",
-        _run_to_thread_synchronously,
-    )
-
-
 # ── _format_field ────────────────────────────────────────────────────────────
 
 class TestFormatField:
