@@ -50,6 +50,20 @@ class TestLoadConfig:
         cfg.write_text(textwrap.dedent(content))
         return cfg
 
+    def _minimal_config(self, extra: str = "") -> str:
+        base = """
+        slack:
+          bot_token: ${SLACK_BOT_TOKEN}
+          app_token: ${SLACK_APP_TOKEN}
+        notion:
+          token: ${NOTION_TOKEN}
+        emoji_mappings:
+          - emoji: eyes
+            notion_db: ${NOTION_DB_REVIEW}
+            processor: TaskProcessor
+        """
+        return textwrap.dedent(base) + textwrap.dedent(extra)
+
     def test_loads_valid_config(
         self, tmp_path: Path, minimal_env: dict
     ) -> None:
@@ -107,4 +121,85 @@ class TestLoadConfig:
             """,
         )
         with pytest.raises(ValueError, match="emoji_mappings"):
+            load_config(cfg)
+
+    def test_valid_notion_link_reply_section_loads(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                notion_link_reply:
+                  enabled: true
+                  channels: ["C123"]
+                  message_template: "✅ <{notion_url}|{task_title}>"
+                  in_thread: true
+                  broadcast: false
+                """
+            ),
+        )
+
+        config = load_config(cfg)
+
+        assert config["notion_link_reply"]["enabled"] is True
+        assert config["notion_link_reply"]["channels"] == ["C123"]
+
+    def test_absent_notion_link_reply_section_is_valid(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(tmp_path, self._minimal_config())
+
+        config = load_config(cfg)
+
+        assert "notion_link_reply" not in config
+
+    def test_notion_link_reply_channels_must_be_list(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                notion_link_reply:
+                  enabled: true
+                  channels: C123
+                """
+            ),
+        )
+
+        with pytest.raises(ValueError, match="notion_link_reply.channels"):
+            load_config(cfg)
+
+    def test_notion_link_reply_channels_must_contain_non_empty_strings(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                notion_link_reply:
+                  enabled: true
+                  channels: [""]
+                """
+            ),
+        )
+
+        with pytest.raises(ValueError, match="notion_link_reply.channels\\[0\\]"):
+            load_config(cfg)
+
+    def test_notion_link_reply_must_be_mapping(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                notion_link_reply:
+                  - C123
+                """
+            ),
+        )
+
+        with pytest.raises(ValueError, match="notion_link_reply"):
             load_config(cfg)

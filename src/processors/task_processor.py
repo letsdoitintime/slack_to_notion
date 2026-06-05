@@ -7,7 +7,7 @@ import logging
 import re
 
 from ..db.database import DatabaseManager
-from ..notion.task_creator import TaskCreator, TaskData
+from ..notion.task_creator import TaskCreator, TaskData, _render_template
 from ..slack.client import SlackClient
 from ..utils.due_date_parser import parse_due_date
 from ..utils.field_extractor import extract_fields
@@ -15,6 +15,10 @@ from ..utils.user_mapper import UserMapper
 from .base import BaseProcessor
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_NOTION_LINK_REPLY_TEMPLATE = (
+    "✅ <{notion_url}|{task_title}> · {task_type} · by {reporter_name}"
+)
 
 
 class TaskProcessor(BaseProcessor):
@@ -171,10 +175,53 @@ class TaskProcessor(BaseProcessor):
 
         # ── Confirm in Slack ──────────────────────────────────────────────────
         await asyncio.to_thread(self._slack.add_reaction, channel, ts, confirm_emoji)
+
+        # No extra idempotency guard: reaction/DB guards above exit before duplicate creation.
+        reply_cfg = self._config.get("notion_link_reply", {})
+        reply_channels = reply_cfg.get("channels") or []
+        if reply_cfg.get("enabled", False) and channel in reply_channels:
+            notion_url = page.get("url", "")
+            if not notion_url:
+                logger.debug(
+                    "Notion link reply enabled for %s but page has no URL; skipping.",
+                    channel,
+                )
+            else:
+                context = {
+                    "notion_url": notion_url,
+                    "notion_page_id": page.get("id", ""),
+                    "task_title": _escape_slack_mrkdwn(title),
+                    "channel_name": channel_name,
+                    "channel_id": channel,
+                    "reporter_name": reporter_info["name"],
+                    "task_type": mapping.get("task_type", ""),
+                    "priority": mapping.get("priority", ""),
+                    "slack_url": slack_url,
+                    "emoji": emoji,
+                }
+                message_template = reply_cfg.get(
+                    "message_template", _DEFAULT_NOTION_LINK_REPLY_TEMPLATE
+                )
+                text = _render_template(message_template, context)
+                anchor = (thread_ts or ts) if reply_cfg.get("in_thread", True) else None
+                broadcast = bool(reply_cfg.get("broadcast", False)) and anchor is not None
+                await asyncio.to_thread(
+                    self._slack.post_message, channel, text, anchor, broadcast
+                )
         return True
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _escape_slack_mrkdwn(text: str) -> str:
+    """Escape text for Slack mrkdwn link labels."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("|", "/")
+    )
+
 
 def _resolve_reactor_assignee(reactor_id: str, mapping: dict) -> str | None:
     """Return assignee Notion user IDs (comma-joined) from per-emoji reactor_assignees.
@@ -247,4 +294,3 @@ def _build_slack_url(channel: str, ts: str, thread_ts: str | None) -> str:
     if thread_ts and thread_ts != ts:
         url += f"?thread_ts={thread_ts}&cid={channel}"
     return url
-

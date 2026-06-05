@@ -25,6 +25,18 @@ from src.processors.task_processor import (
 from src.utils.user_mapper import UserMapper
 
 
+async def _run_to_thread_synchronously(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def run_processor_to_thread_synchronously(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.processors.task_processor.asyncio.to_thread",
+        _run_to_thread_synchronously,
+    )
+
+
 # ── _format_field ────────────────────────────────────────────────────────────
 
 class TestFormatField:
@@ -315,6 +327,49 @@ class TestTaskProcessorProcess:
             "processor": "TaskProcessor",
         }
 
+    def _slack_for_success(
+        self, text: str = "Review this PR", thread_ts: str | None = None
+    ) -> MagicMock:
+        slack = MagicMock()
+        slack.has_bot_reaction.return_value = False
+        message = {"text": text, "user": "U_AUTHOR"}
+        if thread_ts is not None:
+            message["thread_ts"] = thread_ts
+        slack.get_message.return_value = message
+        slack.get_user_info.return_value = {
+            "id": "U_REACTOR",
+            "name": "Alice",
+            "email": None,
+        }
+        slack.get_channel_name.return_value = "engineering"
+        slack.post_message.return_value = True
+        return slack
+
+    def _task_creator_for_success(self) -> MagicMock:
+        task_creator = MagicMock()
+        task_creator.create_task.return_value = {
+            "id": "p1",
+            "url": "https://notion.so/page/123",
+        }
+        return task_creator
+
+    def _reply_config(self, **overrides: object) -> dict:
+        reply_cfg = {
+            "enabled": True,
+            "channels": ["C_CHANNEL"],
+            "message_template": (
+                "✅ <{notion_url}|{task_title}> · {task_type} · by {reporter_name}"
+            ),
+            "in_thread": True,
+            "broadcast": False,
+        }
+        reply_cfg.update(overrides)
+        return {
+            "confirmation": {"react_with": "white_check_mark"},
+            "fields": {"parse_due_date": False},
+            "notion_link_reply": reply_cfg,
+        }
+
     async def test_skips_when_already_confirmed(self) -> None:
         slack = MagicMock()
         slack.has_bot_reaction.return_value = True
@@ -370,6 +425,7 @@ class TestTaskProcessorProcess:
         assert result is True
         task_creator.create_task.assert_called_once()
         slack.add_reaction.assert_called_once_with("C_CHANNEL", "111.222", "white_check_mark")
+        slack.post_message.assert_not_called()
 
     async def test_assignee_mapped_from_user_mapper(self) -> None:
         slack = MagicMock()
@@ -392,6 +448,170 @@ class TestTaskProcessorProcess:
         call_args = task_creator.create_task.call_args
         task_data: TaskData = call_args[0][1]
         assert task_data.assignee_notion_id == "notion-uuid-author"
+
+    async def test_posts_notion_link_reply_for_configured_channel(self) -> None:
+        slack = self._slack_for_success()
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config=self._reply_config(),
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.add_reaction.assert_called_once_with(
+            "C_CHANNEL", "111.222", "white_check_mark"
+        )
+        slack.post_message.assert_called_once_with(
+            "C_CHANNEL",
+            "✅ <https://notion.so/page/123|Review this PR> · Review · by Alice",
+            "111.222",
+            False,
+        )
+
+    async def test_skips_notion_link_reply_for_unlisted_channel(self) -> None:
+        slack = self._slack_for_success()
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config=self._reply_config(channels=["C_OTHER"]),
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.add_reaction.assert_called_once()
+        slack.post_message.assert_not_called()
+
+    async def test_skips_notion_link_reply_when_disabled(self) -> None:
+        slack = self._slack_for_success()
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config=self._reply_config(enabled=False),
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.add_reaction.assert_called_once()
+        slack.post_message.assert_not_called()
+
+    async def test_skips_notion_link_reply_when_section_absent(self) -> None:
+        slack = self._slack_for_success()
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config={"confirmation": {"react_with": "white_check_mark"}},
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.add_reaction.assert_called_once()
+        slack.post_message.assert_not_called()
+
+    async def test_notion_link_reply_uses_parent_thread_anchor(self) -> None:
+        slack = self._slack_for_success(thread_ts="999.000")
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config=self._reply_config(),
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.post_message.assert_called_once_with(
+            "C_CHANNEL",
+            "✅ <https://notion.so/page/123|Review this PR> · Review · by Alice",
+            "999.000",
+            False,
+        )
+
+    async def test_notion_link_reply_broadcasts_with_thread_anchor(self) -> None:
+        slack = self._slack_for_success()
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config=self._reply_config(broadcast=True),
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.post_message.assert_called_once_with(
+            "C_CHANNEL",
+            "✅ <https://notion.so/page/123|Review this PR> · Review · by Alice",
+            "111.222",
+            True,
+        )
+
+    async def test_notion_link_reply_ignores_broadcast_without_thread_anchor(self) -> None:
+        slack = self._slack_for_success()
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config=self._reply_config(in_thread=False, broadcast=True),
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.post_message.assert_called_once_with(
+            "C_CHANNEL",
+            "✅ <https://notion.so/page/123|Review this PR> · Review · by Alice",
+            None,
+            False,
+        )
+
+    async def test_notion_link_reply_failure_does_not_fail_task_creation(self) -> None:
+        slack = self._slack_for_success()
+        slack.post_message.return_value = False
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config=self._reply_config(),
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.add_reaction.assert_called_once_with(
+            "C_CHANNEL", "111.222", "white_check_mark"
+        )
+        slack.post_message.assert_called_once()
+
+    async def test_notion_link_reply_escapes_task_title_for_slack_link(self) -> None:
+        slack = self._slack_for_success("Fix & <unsafe|title>")
+        task_creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=task_creator,
+            config=self._reply_config(),
+        )
+
+        result = await processor.process(self._sample_event(), self._sample_mapping())
+
+        assert result is True
+        slack.post_message.assert_called_once_with(
+            "C_CHANNEL",
+            (
+                "✅ <https://notion.so/page/123|"
+                "Fix &amp; &lt;unsafe/title&gt;> · Review · by Alice"
+            ),
+            "111.222",
+            False,
+        )
 
 
 # ── _resolve_reactor_assignee ─────────────────────────────────────────────────

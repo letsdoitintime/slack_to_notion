@@ -65,6 +65,7 @@ def _validate(config: dict) -> None:
 
     _validate_body_fields(config.get("fields", {}).get("body_fields", []))
     _validate_allowed_reactors(config.get("allowed_reactors"))
+    _validate_notion_link_reply(config.get("notion_link_reply"))
 
 
 def _validate_body_fields(body_fields: object) -> None:
@@ -97,6 +98,36 @@ def _validate_allowed_reactors(allowed_reactors: object) -> None:
             raise ValueError(
                 f"allowed_reactors[{i}] must be a non-empty string (Slack user ID)."
             )
+
+
+def _validate_notion_link_reply(notion_link_reply: object) -> None:
+    """Raise ValueError if notion_link_reply is present but malformed."""
+    if notion_link_reply is None:
+        return
+    if not isinstance(notion_link_reply, dict):
+        raise ValueError("'notion_link_reply' must be a mapping.")
+
+    channels = notion_link_reply.get("channels")
+    if channels is not None:
+        if not isinstance(channels, list):
+            raise ValueError(
+                "'notion_link_reply.channels' must be a list of Slack channel ID strings."
+            )
+        for i, entry in enumerate(channels):
+            if not isinstance(entry, str) or not entry.strip():
+                raise ValueError(
+                    f"notion_link_reply.channels[{i}] must be a non-empty string "
+                    "(Slack channel ID)."
+                )
+
+    for key in ("enabled", "in_thread", "broadcast"):
+        value = notion_link_reply.get(key)
+        if value is not None and not isinstance(value, bool):
+            raise ValueError(f"'notion_link_reply.{key}' must be a boolean.")
+
+    message_template = notion_link_reply.get("message_template")
+    if message_template is not None and not isinstance(message_template, str):
+        raise ValueError("'notion_link_reply.message_template' must be a string.")
 
 
 def _validate_reactor_assignees(mapping: dict, index: int) -> None:

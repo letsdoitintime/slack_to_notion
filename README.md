@@ -32,6 +32,7 @@ Go to <https://api.slack.com/apps> → **Create New App** → **From scratch**.
 | `groups:history` | Read messages in private channels |
 | `reactions:read` | Read reactions on messages |
 | `reactions:write` | Add the ✅ confirmation reaction |
+| `chat:write` | Post the Notion task link back to the channel/thread |
 | `users:read` | Resolve user display names |
 | `channels:read` | Resolve channel names |
 | `groups:read` | Resolve private channel names |

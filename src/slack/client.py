@@ -19,6 +19,37 @@ class SlackClient:
 
     # ── Messages ──────────────────────────────────────────────────────────────
 
+    def post_message(
+        self,
+        channel: str,
+        text: str,
+        thread_ts: str | None = None,
+        broadcast: bool = False,
+    ) -> bool:
+        """Post *text* to Slack. Returns True on success, False on API errors."""
+        kwargs = {"channel": channel, "text": text}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        if broadcast and thread_ts:
+            kwargs["reply_broadcast"] = True
+
+        try:
+            self._client.chat_postMessage(**kwargs)
+            return True
+        except SlackApiError as exc:
+            error = exc.response.get("error")
+            hint = ""
+            if error in {"missing_scope", "not_allowed_token_type"}:
+                hint = " Add the chat:write bot token scope and reinstall the Slack app."
+            logger.warning(
+                "Failed to post Slack message to %s (thread_ts=%s): %s.%s",
+                channel,
+                thread_ts,
+                error,
+                hint,
+            )
+            return False
+
     def get_message(self, channel: str, ts: str) -> dict | None:
         """Fetch the Slack message identified by *channel* + *ts*.
 

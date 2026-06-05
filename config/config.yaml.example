@@ -236,3 +236,19 @@ confirmation:
   react_with: "comet"   # emoji added to the message after task is created
   # Also guards against duplicate processing: if this reaction already exists
   # on a message, the bot will skip re-creating the task.
+
+# ─── Notion link replies ──────────────────────────────────────────────────────
+# Best-effort Slack reply posted after a Notion task is created.
+# This is inert unless enabled is true AND the Slack channel ID is listed below.
+# Use channel IDs, not names. Empty or missing channels means this never fires.
+# Requires the Slack bot token to have chat:write and the bot must be a member
+# of each listed channel. Reinstall the Slack app after adding new scopes.
+# Available placeholders:
+#   notion_url, notion_page_id, task_title, channel_name, channel_id,
+#   reporter_name, task_type, priority, slack_url, emoji
+notion_link_reply:
+  enabled: true
+  channels: ["C05LY9SDVRP"]
+  message_template: "✅ <{notion_url}|{task_title}> · {task_type} · by {reporter_name}"
+  in_thread: true
+  broadcast: false
