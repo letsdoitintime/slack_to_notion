@@ -67,7 +67,7 @@ cp .env.example .env
 
 Edit `config/config.yaml`:
 - Map emojis to Notion databases under `emoji_mappings`
-- Set `fields.notion_properties` to match your Notion database property names exactly
+- Set `fields.notion_fields` to match your Notion database property names exactly
 - Add Slack → Notion user mappings under `users` (optional, for assignee field)
 
 ### 4. Install dependencies & run
@@ -94,13 +94,13 @@ emoji_mappings:
     processor: "TaskProcessor"  # Which processor class to use
 ```
 
-### `fields.notion_properties`
+### `fields.notion_fields`
 
 Maps the bot's internal field names to your Notion database property names.
 
 | Internal field | What it contains | Recommended Notion type |
 |---|---|---|
-| `title` | First 100 chars of the Slack message | **Title** |
+| `title` | Short task title: AI-generated 5–15 word phrase (if [Ollama](#ai-title-generation-ollama) is enabled) or the first ~100 chars of the message | **Title** |
 | `status` | Default status from config | Status / Select |
 | `priority` | Priority from `emoji_mappings` | Select |
 | `task_type` | Task type from `emoji_mappings` | Select |
@@ -122,6 +122,92 @@ users:
 ```
 
 Find Notion user IDs: `GET https://api.notion.com/v1/users` with your integration token.
+
+---
+
+## AI title generation (Ollama)
+
+By default the task title is the first ~100 characters of the Slack message (mrkdwn
+stripped, truncated at a word boundary). This is fine for tidy messages but poor for
+long or rambling ones.
+
+When the optional **`ollama`** section is enabled, the bot instead asks a local
+[Ollama](https://ollama.com) model for a short 5–15 word title that summarises the
+message — e.g. a message reading *"Hey team, the checkout page throws a 500 when the
+coupon field is empty, we need to validate it server-side before Friday's release"*
+becomes **"Validate and sanitize coupon input before Friday release"**.
+
+### Graceful fallback — Ollama is never required
+
+Title generation is **cosmetic and best-effort**. If anything goes wrong — Ollama not
+running, model not pulled, request times out, empty/invalid response — the bot
+**silently falls back to the original first-line title**. The task is always created
+and the user never sees an error. Concretely, the fallback triggers when:
+
+- the `ollama` section is absent or `enabled: false` (no LLM call at all);
+- the message is empty after stripping Slack formatting;
+- the Ollama service is unreachable (`OllamaUnavailable`);
+- Ollama returns a non-200 status or an empty/invalid body (`OllamaError`).
+
+This means you can enable it on a server with Ollama and leave it disabled (or simply
+not install Ollama) everywhere else — the same code runs in both.
+
+### Setup
+
+1. Install Ollama and pull a model (a small one is plenty for titles):
+
+   ```bash
+   # https://ollama.com/download
+   ollama pull qwen2.5:3b
+   ollama list          # confirm the model name
+   ```
+
+2. Enable the section in `config/config.yaml`:
+
+   ```yaml
+   ollama:
+     enabled: true
+     base_url: http://127.0.0.1:11434
+     model: qwen2.5:3b          # must match a name from `ollama list`
+     timeout_s: 15              # fall back to the first-line title after this many seconds
+     num_thread: 6              # CPU threads for inference; 0 = let Ollama decide
+     title_language:            # optional, e.g. "en"; blank = match the message language
+   ```
+
+   Omit the section entirely (or set `enabled: false`) to keep first-line titles.
+
+The generated title still flows through `task_title_template`, so per-emoji/global
+wrappers like `"[Slack] {task_title} — {channel_name}"` continue to apply.
+
+### Configuration reference
+
+| Key | Default | Purpose |
+|---|---|---|
+| `enabled` | `false` | Master switch. `false`/absent → first-line titles, no LLM call. |
+| `base_url` | `http://127.0.0.1:11434` | Ollama service address. |
+| `model` | `qwen2.5:3b` | Model name; must match `ollama list`. |
+| `timeout_s` | `15` | Seconds before the request is abandoned and the fallback used. |
+| `num_thread` | `6` | CPU threads for inference; `0` = let Ollama decide. |
+| `title_language` | _(blank)_ | Force titles into a language (e.g. `en`); blank = match the message. |
+
+### Design notes
+
+- **No new dependencies.** The client ([`src/utils/ollama_client.py`](src/utils/ollama_client.py))
+  is a thin synchronous wrapper over Ollama's `POST /api/generate`, built on the
+  standard library and run off the event loop via `asyncio.to_thread` — the same way
+  the Slack and Notion clients are called.
+- **`keep_alive: 0`** unloads the model from RAM immediately after each request — good
+  for the bot's infrequent, bursty usage. Trade-off: each call pays a cold-start cost
+  (~2–6 s for a 3B model on CPU), which is invisible because it runs asynchronously
+  during task creation.
+- **Only the first 500 chars** of the message are sent to the model (enough to grasp
+  the topic), and the returned title is capped at 100 chars.
+- All keys support `${ENV_VAR}` placeholders. `base_url`, `model`, and
+  `title_language` stay as strings; `timeout_s` and `num_thread` accept either
+  numeric literals or `${ENV_VAR}` references — both are coerced on startup.
+
+See [`docs/ollama-title-generation.md`](docs/ollama-title-generation.md) for the full
+design and porting reference.
 
 ---
 
@@ -188,6 +274,7 @@ SlackToNotion/
 │   └── utils/
 │       ├── config_loader.py ← YAML + env var resolution
 │       ├── due_date_parser.py← NLP date extraction
+│       ├── ollama_client.py ← optional local-LLM title generation
 │       └── user_mapper.py   ← Slack ↔ Notion user mapping
 └── tests/
 ```

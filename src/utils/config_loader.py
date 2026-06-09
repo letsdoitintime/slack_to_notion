@@ -66,6 +66,48 @@ def _validate(config: dict) -> None:
     _validate_body_fields(config.get("fields", {}).get("body_fields", []))
     _validate_allowed_reactors(config.get("allowed_reactors"))
     _validate_notion_link_reply(config.get("notion_link_reply"))
+    _validate_ollama(config.get("ollama"))
+
+
+def _validate_ollama(ollama: object) -> None:
+    """Raise ValueError if the optional 'ollama' section is present but malformed."""
+    if ollama is None:
+        return
+    if not isinstance(ollama, dict):
+        raise ValueError("'ollama' must be a mapping.")
+
+    enabled = ollama.get("enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        raise ValueError("'ollama.enabled' must be a boolean.")
+
+    for key in ("base_url", "model", "title_language"):
+        value = ollama.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"'ollama.{key}' must be a string.")
+
+    timeout = ollama.get("timeout_s")
+    if timeout is not None:
+        if isinstance(timeout, bool):
+            raise ValueError("'ollama.timeout_s' must be a number.")
+        if isinstance(timeout, str):
+            try:
+                float(timeout)
+            except ValueError:
+                raise ValueError("'ollama.timeout_s' must be a number.")
+        elif not isinstance(timeout, (int, float)):
+            raise ValueError("'ollama.timeout_s' must be a number.")
+
+    num_thread = ollama.get("num_thread")
+    if num_thread is not None:
+        if isinstance(num_thread, bool):
+            raise ValueError("'ollama.num_thread' must be an integer.")
+        if isinstance(num_thread, str):
+            try:
+                int(num_thread)
+            except ValueError:
+                raise ValueError("'ollama.num_thread' must be an integer.")
+        elif not isinstance(num_thread, int):
+            raise ValueError("'ollama.num_thread' must be an integer.")
 
 
 def _validate_body_fields(body_fields: object) -> None:

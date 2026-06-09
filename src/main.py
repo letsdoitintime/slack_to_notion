@@ -19,6 +19,7 @@ from .processors.task_processor import TaskProcessor
 from .slack.client import SlackClient
 from .slack.event_handler import register_handlers
 from .utils.config_loader import load_config
+from .utils.ollama_client import build_ollama_client
 from .utils.user_mapper import UserMapper
 
 
@@ -60,6 +61,7 @@ async def _run() -> None:
     notion_client = NotionClient(notion_cfg["token"])
     user_mapper = UserMapper(config.get("users", {}))
     task_creator = TaskCreator(notion_client, fields_cfg)
+    ollama = build_ollama_client(config)   # None when the ollama section is disabled/absent
 
     # ── Build processor map ───────────────────────────────────────────────────
     # All processors share the same client instances.
@@ -72,6 +74,7 @@ async def _run() -> None:
                 user_mapper=user_mapper,
                 config=config,
                 db=db,
+                ollama=ollama,
             )
         else:
             # Generic construction for custom processors that only need config.
