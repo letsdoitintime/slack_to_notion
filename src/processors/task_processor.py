@@ -11,6 +11,7 @@ from ..notion.task_creator import TaskCreator, TaskData, _render_template
 from ..slack.client import SlackClient
 from ..utils.due_date_parser import parse_due_date
 from ..utils.field_extractor import extract_fields
+from ..utils.ollama_client import OllamaClient
 from ..utils.user_mapper import UserMapper
 from .base import BaseProcessor
 
@@ -43,12 +44,20 @@ class TaskProcessor(BaseProcessor):
         user_mapper: UserMapper,
         config: dict,
         db: DatabaseManager | None = None,
+        ollama: OllamaClient | None = None,
     ) -> None:
         self._slack = slack
         self._task_creator = task_creator
         self._user_mapper = user_mapper
         self._config = config
         self._db = db
+        self._ollama = ollama
+        # `or {}` guards a bare/blank `ollama:` key (parses to None), matching the
+        # tolerance of build_ollama_client and _validate_ollama — a None section
+        # means "feature off", never a startup crash.
+        self._ollama_title_language: str | None = (
+            (config.get("ollama") or {}).get("title_language") or None
+        )
 
     # ── BaseProcessor interface ───────────────────────────────────────────────
 
@@ -137,7 +146,7 @@ class TaskProcessor(BaseProcessor):
         )
 
         # ── Build task data ───────────────────────────────────────────────────
-        title = _extract_title(message_text)
+        title = await self._derive_title(message_text)
         task_data = TaskData(
             title=title,
             slack_url=slack_url,
@@ -209,6 +218,36 @@ class TaskProcessor(BaseProcessor):
                     self._slack.post_message, channel, text, anchor, broadcast
                 )
         return True
+
+    # ── Title generation ──────────────────────────────────────────────────────
+
+    async def _derive_title(self, message_text: str) -> str:
+        """Return an AI-generated title via Ollama, falling back to first-line text.
+
+        The Ollama call is cosmetic and best-effort: any failure (disabled,
+        service down, timeout, empty/bad response) silently falls back to
+        :func:`_extract_title` so task creation never breaks and the user never
+        sees an error. Slack mrkdwn is stripped before the text reaches the model.
+        """
+        fallback = _extract_title(message_text)
+        if self._ollama is None:
+            return fallback
+
+        cleaned = _clean_slack_text(message_text)
+        if not cleaned:
+            return fallback
+
+        try:
+            title = await asyncio.to_thread(
+                self._ollama.generate_title, cleaned, self._ollama_title_language
+            )
+        except Exception:
+            logger.debug(
+                "Ollama title generation failed — using first-line fallback.",
+                exc_info=True,
+            )
+            return fallback
+        return title.strip() or fallback
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -203,3 +203,160 @@ class TestLoadConfig:
 
         with pytest.raises(ValueError, match="notion_link_reply"):
             load_config(cfg)
+
+
+class TestOllamaValidation:
+    """Validation of the optional `ollama` config section."""
+
+    def _write_config(self, tmp_path: Path, content: str) -> Path:
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(textwrap.dedent(content))
+        return cfg
+
+    def _minimal_config(self, extra: str = "") -> str:
+        base = """
+        slack:
+          bot_token: ${SLACK_BOT_TOKEN}
+          app_token: ${SLACK_APP_TOKEN}
+        notion:
+          token: ${NOTION_TOKEN}
+        emoji_mappings:
+          - emoji: eyes
+            notion_db: ${NOTION_DB_REVIEW}
+            processor: TaskProcessor
+        """
+        return textwrap.dedent(base) + textwrap.dedent(extra)
+
+    def test_absent_ollama_section_is_valid(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(tmp_path, self._minimal_config())
+        config = load_config(cfg)
+        assert "ollama" not in config
+
+    def test_valid_ollama_section_loads(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  enabled: true
+                  base_url: http://127.0.0.1:11434
+                  model: qwen2.5:3b
+                  timeout_s: 15
+                  num_thread: 6
+                  title_language: en
+                """
+            ),
+        )
+        config = load_config(cfg)
+        assert config["ollama"]["enabled"] is True
+        assert config["ollama"]["model"] == "qwen2.5:3b"
+
+    def test_timeout_may_be_float(self, tmp_path: Path, minimal_env: dict) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  enabled: true
+                  timeout_s: 7.5
+                """
+            ),
+        )
+        config = load_config(cfg)
+        assert config["ollama"]["timeout_s"] == 7.5
+
+    def test_ollama_must_be_mapping(self, tmp_path: Path, minimal_env: dict) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  - enabled
+                """
+            ),
+        )
+        with pytest.raises(ValueError, match="ollama"):
+            load_config(cfg)
+
+    def test_enabled_must_be_boolean(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  enabled: "yes"
+                """
+            ),
+        )
+        with pytest.raises(ValueError, match="ollama.enabled"):
+            load_config(cfg)
+
+    def test_base_url_must_be_string(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  enabled: true
+                  base_url: 11434
+                """
+            ),
+        )
+        with pytest.raises(ValueError, match="ollama.base_url"):
+            load_config(cfg)
+
+    def test_timeout_s_must_be_number(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  enabled: true
+                  timeout_s: soon
+                """
+            ),
+        )
+        with pytest.raises(ValueError, match="ollama.timeout_s"):
+            load_config(cfg)
+
+    def test_num_thread_must_be_integer(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  enabled: true
+                  num_thread: 6.5
+                """
+            ),
+        )
+        with pytest.raises(ValueError, match="ollama.num_thread"):
+            load_config(cfg)
+
+    def test_title_language_must_be_string(
+        self, tmp_path: Path, minimal_env: dict
+    ) -> None:
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  enabled: true
+                  title_language: 42
+                """
+            ),
+        )
+        with pytest.raises(ValueError, match="ollama.title_language"):
+            load_config(cfg)
