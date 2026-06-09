@@ -312,7 +312,8 @@ def _decode_slack_entity(inner: str) -> tuple[str, str | None]:
     if inner[:1] in ("@", "#"):
         return inner[0] + (label if sep else payload[1:]), None
     if inner[:1] == "!":
-        return "@" + (label if sep else payload[1:]), None
+        display = label if sep else payload[1:]
+        return display if display.startswith("@") else "@" + display, None
     # mailto:/tel:/geo:/sms: — show the label, else the address minus the scheme.
     if sep:
         return label, None

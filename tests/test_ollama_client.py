@@ -267,6 +267,15 @@ class TestBuildOllamaClient:
         assert client._timeout == 15.0
         assert client._num_thread == 6
 
+    def test_zero_num_thread_preserved_not_replaced_by_default(self) -> None:
+        # num_thread: 0 means "let Ollama decide" — must not be replaced by default 6.
+        client = build_ollama_client({"ollama": {"enabled": True, "num_thread": 0}})
+        assert client._num_thread == 0
+
+    def test_zero_timeout_s_preserved_not_replaced_by_default(self) -> None:
+        client = build_ollama_client({"ollama": {"enabled": True, "timeout_s": 0}})
+        assert client._timeout == 0.0
+
 
 # ── TaskProcessor._derive_title (graceful fallback) ───────────────────────────
 
@@ -336,6 +345,15 @@ class TestDeriveTitle:
         proc = self._processor(ollama=ollama, config={"ollama": {"title_language": "fr"}})
         await proc._derive_title("Some message")
         assert ollama.generate_title.call_args[0][1] == "fr"
+
+    async def test_falls_back_when_generate_title_raises_attribute_error(self) -> None:
+        # Ensures the try block covers title.strip() — a non-string return from a
+        # misconfigured mock (or subclass) must not propagate out of _derive_title.
+        ollama = MagicMock()
+        ollama.generate_title.return_value = None  # non-str → .strip() would raise
+        proc = self._processor(ollama=ollama)
+        # None.strip() raises AttributeError — must fall back, not propagate.
+        assert await proc._derive_title("Fix the login bug") == "Fix the login bug"
 
 
 # ── Live integration (auto-skips when Ollama is not reachable) ─────────────────

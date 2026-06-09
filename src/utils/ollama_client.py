@@ -124,11 +124,13 @@ def build_ollama_client(config: dict) -> OllamaClient | None:
     cfg = config.get("ollama", {}) or {}
     if not cfg.get("enabled", False):
         return None
+    timeout_s = cfg.get("timeout_s")
+    num_thread = cfg.get("num_thread")
     client = OllamaClient(
         base_url=cfg.get("base_url") or "http://127.0.0.1:11434",
         model=cfg.get("model") or "qwen2.5:3b",
-        timeout=float(cfg.get("timeout_s") or 15),
-        num_thread=int(cfg.get("num_thread") or 6),
+        timeout=float(timeout_s if timeout_s is not None else 15),
+        num_thread=int(num_thread if num_thread is not None else 6),
     )
     logger.info("Ollama title generation enabled (model=%s).", client._model)
     return client

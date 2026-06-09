@@ -223,8 +223,10 @@ ollama:
   title_language:                     # e.g. "en"; blank = match the message language
 ```
 
-`base_url`/`model` accept `${ENV_VAR}` placeholders (resolved by `config_loader`); keep
-`timeout_s`/`num_thread` as numeric literals.
+All keys accept `${ENV_VAR}` placeholders (resolved by `config_loader`). `base_url`,
+`model`, and `title_language` stay as strings; `timeout_s` and `num_thread` accept
+either numeric literals or `${ENV_VAR}` references — `build_ollama_client` coerces
+both via `float()`/`int()` on startup.
 
 ---
 

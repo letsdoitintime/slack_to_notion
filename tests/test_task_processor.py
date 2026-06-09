@@ -907,6 +907,13 @@ class TestNotionBlockHelpers:
         assert seg["text"]["content"] == "Call us"
         assert "link" not in seg["text"]
 
+    def test_make_paragraph_block_subteam_mention_no_double_at(self) -> None:
+        # <!subteam^S123|@team> — the label already has @; must not produce @@team.
+        block = _make_paragraph_block("hey <!subteam^S123|@team> please check")
+        text = "".join(r["text"]["content"] for r in block["paragraph"]["rich_text"])
+        assert "@team" in text
+        assert "@@team" not in text
+
     def test_make_paragraph_block_preserves_balanced_parens_in_url(self) -> None:
         # https://en.wikipedia.org/wiki/Foo_(bar) — the trailing ) is balanced
         # and must NOT be stripped into a plain-text fragment.

@@ -100,7 +100,7 @@ Maps the bot's internal field names to your Notion database property names.
 
 | Internal field | What it contains | Recommended Notion type |
 |---|---|---|
-| `title` | AI-generated summary (if [Ollama](#ai-title-generation-ollama) is enabled) or the first ~100 chars of the message | **Title** |
+| `title` | Short task title: AI-generated 5–15 word phrase (if [Ollama](#ai-title-generation-ollama) is enabled) or the first ~100 chars of the message | **Title** |
 | `status` | Default status from config | Status / Select |
 | `priority` | Priority from `emoji_mappings` | Select |
 | `task_type` | Task type from `emoji_mappings` | Select |
@@ -202,8 +202,9 @@ wrappers like `"[Slack] {task_title} — {channel_name}"` continue to apply.
   during task creation.
 - **Only the first 500 chars** of the message are sent to the model (enough to grasp
   the topic), and the returned title is capped at 100 chars.
-- `base_url`/`model` can be supplied via `${ENV_VAR}` placeholders like any other
-  config string; keep `timeout_s`/`num_thread` as numeric literals.
+- All keys support `${ENV_VAR}` placeholders. `base_url`, `model`, and
+  `title_language` stay as strings; `timeout_s` and `num_thread` accept either
+  numeric literals or `${ENV_VAR}` references — both are coerced on startup.
 
 See [`docs/ollama-title-generation.md`](docs/ollama-title-generation.md) for the full
 design and porting reference.

@@ -241,13 +241,13 @@ class TaskProcessor(BaseProcessor):
             title = await asyncio.to_thread(
                 self._ollama.generate_title, cleaned, self._ollama_title_language
             )
+            return title.strip() or fallback
         except Exception:
             logger.debug(
                 "Ollama title generation failed — using first-line fallback.",
                 exc_info=True,
             )
             return fallback
-        return title.strip() or fallback
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
