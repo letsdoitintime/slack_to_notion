@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -277,11 +278,124 @@ def _render_template(template: str, context: dict) -> str:
     return template.format_map(defaultdict(str, context))
 
 
+# Notion: a single block holds at most 100 rich_text objects.
+_MAX_RICH_TEXT = 100
+# Slack entity ``<...>`` — anchored to real entity prefixes (scheme / @ / # / !)
+# so genuine angle brackets a user typed (``3 < 5``, ``<T>``) are left untouched.
+_SLACK_ENTITY_RE = re.compile(
+    r"<((?:https?://|mailto:|tel:|geo:|sms:|[@#!])[^<>]*)>"
+)
+# Bare http(s) URL inside plain text (stops at whitespace and Slack delimiters).
+_URL_RE = re.compile(r"https?://[^\s<>|]+")
+# Punctuation that commonly trails a URL in prose but isn't part of it.
+_URL_TRAILING_PUNCT = ".,;:!?)]}\"'»>"
+
+
+def _decode_slack_entity(inner: str) -> tuple[str, str | None]:
+    """Decode the inside of a Slack ``<...>`` entity into ``(display_text, link_url)``.
+
+    ``<url|label>``  → ``(label, url)``      ``<url>``    → ``(url, url)``
+    ``<@ID|name>``   → ``("@name", None)``   ``<@ID>``    → ``("@ID", None)``
+    ``<#ID|name>``   → ``("#name", None)``   ``<!here>``  → ``("@here", None)``
+    ``<mailto:a@b|Email>`` → ``("Email", None)``  (unwrapped, no link)
+
+    Only http(s) entities carry a ``link_url`` — Notion reliably accepts only
+    http(s) in a rich_text link, so mailto/tel/geo/sms are unwrapped to readable
+    text without a link rather than risk a rejected payload.
+    """
+    payload, sep, label = inner.partition("|")
+    if inner.startswith(("http://", "https://")):
+        return (label if sep else payload), payload
+    if inner[:1] in ("@", "#"):
+        return inner[0] + (label if sep else payload[1:]), None
+    if inner[:1] == "!":
+        return "@" + (label if sep else payload[1:]), None
+    # mailto:/tel:/geo:/sms: — show the label, else the address minus the scheme.
+    if sep:
+        return label, None
+    _scheme, _colon, addr = inner.partition(":")
+    return (addr or inner), None
+
+
+def _split_plain_urls(span: str) -> list[tuple[str, str | None]]:
+    """Split a plain-text *span* into segments, linkifying any bare http(s) URLs."""
+    segments: list[tuple[str, str | None]] = []
+    last = 0
+    for m in _URL_RE.finditer(span):
+        if m.start() > last:
+            segments.append((span[last : m.start()], None))
+        url = m.group(0)
+        trail = ""
+        while url and url[-1] in _URL_TRAILING_PUNCT:
+            trail, url = url[-1] + trail, url[:-1]
+        if url:
+            segments.append((url, url))
+        if trail:
+            segments.append((trail, None))
+        last = m.end()
+    if last < len(span):
+        segments.append((span[last:], None))
+    return segments
+
+
+def _slack_text_to_segments(text: str) -> list[tuple[str, str | None]]:
+    """Tokenize Slack-formatted *text* into ``(display_text, link_url)`` segments."""
+    segments: list[tuple[str, str | None]] = []
+    pos = 0
+    for m in _SLACK_ENTITY_RE.finditer(text):
+        if m.start() > pos:
+            segments.extend(_split_plain_urls(text[pos : m.start()]))
+        segments.append(_decode_slack_entity(m.group(1)))
+        pos = m.end()
+    if pos < len(text):
+        segments.extend(_split_plain_urls(text[pos:]))
+    return segments
+
+
+def _cap_rich_text(rich_text: list[dict]) -> list[dict]:
+    """Enforce Notion's max-100-rich_text-objects-per-block limit.
+
+    A pathological body (dozens of links) can produce more than 100 segments.
+    Keep the first 99 (with their links intact) and fold the remainder into one
+    trailing plain run, clipped to the 2 000-char limit, so the payload stays
+    valid instead of being rejected by the API.
+    """
+    if len(rich_text) <= _MAX_RICH_TEXT:
+        return rich_text
+    logger.warning(
+        "Paragraph produced %d rich_text segments (> %d); merging the overflow.",
+        len(rich_text),
+        _MAX_RICH_TEXT,
+    )
+    head = rich_text[: _MAX_RICH_TEXT - 1]
+    tail = "".join(rt["text"]["content"] for rt in rich_text[_MAX_RICH_TEXT - 1 :])
+    head.append({"type": "text", "text": {"content": tail[:_MAX_TEXT_LEN]}})
+    return head
+
+
 def _make_paragraph_block(text: str) -> dict:
-    """Return a Notion paragraph block for *text*, splitting at 2 000-char chunks."""
-    chunks = [text[i : i + _MAX_TEXT_LEN] for i in range(0, len(text), _MAX_TEXT_LEN)]
-    rich_text = [{"type": "text", "text": {"content": chunk}} for chunk in chunks]
-    return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": rich_text}}
+    """Return a Notion paragraph block for *text*.
+
+    Slack mrkdwn entities (``<url|label>``, ``<@ID>``, ``<#ID|name>`` …) are
+    unwrapped and bare URLs are linkified, so links render as clickable links
+    and no stray ``<>`` symbols leak into the page. Each segment's text is
+    still chunked at the 2 000-char Notion limit, and the whole block is capped
+    at 100 rich_text objects.
+    """
+    rich_text: list[dict] = []
+    for content, link in _slack_text_to_segments(text):
+        if not content:
+            continue
+        for i in range(0, len(content), _MAX_TEXT_LEN):
+            text_obj: dict = {"content": content[i : i + _MAX_TEXT_LEN]}
+            if link:
+                text_obj["link"] = {"url": link}
+            rich_text.append({"type": "text", "text": text_obj})
+    return {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {"rich_text": _cap_rich_text(rich_text)},
+    }
 
 
 def _make_table_row(col1: str, col2: str) -> dict:

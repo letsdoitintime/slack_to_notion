@@ -835,6 +835,84 @@ class TestNotionBlockHelpers:
         assert total == 4500
         assert len(block["paragraph"]["rich_text"]) == 3  # 2000 + 2000 + 500
 
+    def test_make_paragraph_block_linkifies_bare_url(self) -> None:
+        block = _make_paragraph_block("see https://slack.com/archives/C1/p123 now")
+        rich = block["paragraph"]["rich_text"]
+        link_seg = next(r for r in rich if r["text"].get("link"))
+        assert link_seg["text"]["content"] == "https://slack.com/archives/C1/p123"
+        assert link_seg["text"]["link"] == {"url": "https://slack.com/archives/C1/p123"}
+
+    def test_make_paragraph_block_unwraps_slack_angle_link(self) -> None:
+        block = _make_paragraph_block("<https://techcore.atlassian.net/browse/PG-5841>")
+        rich = block["paragraph"]["rich_text"]
+        assert len(rich) == 1
+        assert rich[0]["text"]["content"] == "https://techcore.atlassian.net/browse/PG-5841"
+        assert rich[0]["text"]["link"] == {"url": "https://techcore.atlassian.net/browse/PG-5841"}
+        # No stray angle brackets leaked into the page.
+        assert "<" not in rich[0]["text"]["content"]
+        assert ">" not in rich[0]["text"]["content"]
+
+    def test_make_paragraph_block_labeled_link(self) -> None:
+        block = _make_paragraph_block("<https://example.com|click here>")
+        seg = block["paragraph"]["rich_text"][0]
+        assert seg["text"]["content"] == "click here"
+        assert seg["text"]["link"] == {"url": "https://example.com"}
+
+    def test_make_paragraph_block_unwraps_user_mention(self) -> None:
+        block = _make_paragraph_block("<@U0ALD6BT39D> ping")
+        text = "".join(r["text"]["content"] for r in block["paragraph"]["rich_text"])
+        assert text == "@U0ALD6BT39D ping"
+        assert "<" not in text and ">" not in text
+
+    def test_make_paragraph_block_unwraps_channel_mention(self) -> None:
+        block = _make_paragraph_block("<#C123|internal-payments>")
+        assert block["paragraph"]["rich_text"][0]["text"]["content"] == "#internal-payments"
+
+    def test_make_paragraph_block_full_body_scenario(self) -> None:
+        """End-to-end body from the screenshot: no stray <>, both URLs clickable."""
+        body = (
+            "Reporter: Andrii Ka | Channel: #internal-payments\n"
+            "<https://techcore.atlassian.net/browse/PG-5841>\n"
+            "<@U0ALD6BT39D> обновишь описание согласно описанию?\n\n"
+            "https://slack.com/archives/C05LY9SDVRP/p1780919338458349"
+        )
+        rich = _make_paragraph_block(body)["paragraph"]["rich_text"]
+        full = "".join(r["text"]["content"] for r in rich)
+        assert "<" not in full and ">" not in full
+        links = {r["text"]["link"]["url"] for r in rich if r["text"].get("link")}
+        assert links == {
+            "https://techcore.atlassian.net/browse/PG-5841",
+            "https://slack.com/archives/C05LY9SDVRP/p1780919338458349",
+        }
+
+    def test_make_paragraph_block_plain_text_has_no_link_key(self) -> None:
+        block = _make_paragraph_block("Reporter: Bob")
+        assert "link" not in block["paragraph"]["rich_text"][0]["text"]
+
+    def test_make_paragraph_block_preserves_non_slack_angle_brackets(self) -> None:
+        # Genuine user-typed angle brackets must not be eaten by the unwrapper.
+        block = _make_paragraph_block("For x<y> and List<T> the result")
+        text = "".join(r["text"]["content"] for r in block["paragraph"]["rich_text"])
+        assert text == "For x<y> and List<T> the result"
+
+    def test_make_paragraph_block_mailto_is_plain_text(self) -> None:
+        block = _make_paragraph_block("<mailto:a@b.com|Email me>")
+        seg = block["paragraph"]["rich_text"][0]
+        assert seg["text"]["content"] == "Email me"
+        assert "link" not in seg["text"]  # no non-http(s) link.url for Notion
+
+    def test_make_paragraph_block_tel_entity_is_plain_text(self) -> None:
+        block = _make_paragraph_block("<tel:+1-555-0123|Call us>")
+        seg = block["paragraph"]["rich_text"][0]
+        assert seg["text"]["content"] == "Call us"
+        assert "link" not in seg["text"]
+
+    def test_make_paragraph_block_caps_at_100_rich_text(self) -> None:
+        body = " ".join(f"https://example.com/{i}" for i in range(150))
+        rich = _make_paragraph_block(body)["paragraph"]["rich_text"]
+        assert len(rich) <= 100
+        assert all(len(r["text"]["content"]) <= 2000 for r in rich)
+
     def test_make_table_row_structure(self) -> None:
         row = _make_table_row("Field", "Value")
         assert row["type"] == "table_row"
