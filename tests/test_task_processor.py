@@ -907,6 +907,27 @@ class TestNotionBlockHelpers:
         assert seg["text"]["content"] == "Call us"
         assert "link" not in seg["text"]
 
+    def test_make_paragraph_block_preserves_balanced_parens_in_url(self) -> None:
+        # https://en.wikipedia.org/wiki/Foo_(bar) — the trailing ) is balanced
+        # and must NOT be stripped into a plain-text fragment.
+        url = "https://en.wikipedia.org/wiki/Foo_(bar)"
+        block = _make_paragraph_block(f"see {url} for details")
+        rt = block["paragraph"]["rich_text"]
+        link_segs = [r for r in rt if r["text"].get("link")]
+        assert any(r["text"]["link"]["url"] == url for r in link_segs), (
+            f"Balanced-paren URL not preserved as a link: {[r['text'] for r in rt]}"
+        )
+
+    def test_make_paragraph_block_strips_unmatched_trailing_paren(self) -> None:
+        # A URL inside prose parentheses: "see (http://x.com)" — the ) after the
+        # URL is unmatched inside the URL itself and should be stripped.
+        block = _make_paragraph_block("(see http://x.com)")
+        rt = block["paragraph"]["rich_text"]
+        link_segs = [r for r in rt if r["text"].get("link")]
+        assert link_segs
+        assert link_segs[0]["text"]["link"]["url"] == "http://x.com"
+        assert link_segs[0]["text"]["content"] == "http://x.com"
+
     def test_make_paragraph_block_caps_at_100_rich_text(self) -> None:
         body = " ".join(f"https://example.com/{i}" for i in range(150))
         rich = _make_paragraph_block(body)["paragraph"]["rich_text"]

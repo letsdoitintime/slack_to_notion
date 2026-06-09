@@ -287,8 +287,11 @@ _SLACK_ENTITY_RE = re.compile(
 )
 # Bare http(s) URL inside plain text (stops at whitespace and Slack delimiters).
 _URL_RE = re.compile(r"https?://[^\s<>|]+")
-# Punctuation that commonly trails a URL in prose but isn't part of it.
-_URL_TRAILING_PUNCT = ".,;:!?)]}\"'»>"
+# Punctuation that unconditionally trails a URL in prose (never part of it).
+_URL_TRAILING_PUNCT = ".,;:!?\"'»>"
+# Closing brackets that trail a URL only when unmatched (e.g. strip the final )
+# from "see (http://x.com)" but keep it in "https://en.wikipedia.org/wiki/Foo_(bar)").
+_URL_CLOSING_BRACKETS: dict[str, str] = {")" : "(", "]": "[", "}": "{"}
 
 
 def _decode_slack_entity(inner: str) -> tuple[str, str | None]:
@@ -326,8 +329,18 @@ def _split_plain_urls(span: str) -> list[tuple[str, str | None]]:
             segments.append((span[last : m.start()], None))
         url = m.group(0)
         trail = ""
-        while url and url[-1] in _URL_TRAILING_PUNCT:
-            trail, url = url[-1] + trail, url[:-1]
+        while url:
+            c = url[-1]
+            if c in _URL_TRAILING_PUNCT:
+                trail, url = c + trail, url[:-1]
+            elif c in _URL_CLOSING_BRACKETS:
+                open_c = _URL_CLOSING_BRACKETS[c]
+                if url.count(c) > url.count(open_c):
+                    trail, url = c + trail, url[:-1]
+                else:
+                    break
+            else:
+                break
         if url:
             segments.append((url, url))
         if trail:

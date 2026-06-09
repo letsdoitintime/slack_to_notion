@@ -360,3 +360,25 @@ class TestOllamaValidation:
         )
         with pytest.raises(ValueError, match="ollama.title_language"):
             load_config(cfg)
+
+    def test_accepts_string_timeout_and_num_thread(
+        self, tmp_path: Path, minimal_env: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ${ENV_VAR} expansion yields strings; validator must accept numeric strings
+        # because build_ollama_client already coerces them via float()/int().
+        monkeypatch.setenv("OLLAMA_TIMEOUT", "12.5")
+        monkeypatch.setenv("OLLAMA_THREADS", "4")
+        cfg = self._write_config(
+            tmp_path,
+            self._minimal_config(
+                """
+                ollama:
+                  enabled: true
+                  timeout_s: ${OLLAMA_TIMEOUT}
+                  num_thread: ${OLLAMA_THREADS}
+                """
+            ),
+        )
+        config = load_config(cfg)
+        assert config["ollama"]["timeout_s"] == "12.5"
+        assert config["ollama"]["num_thread"] == "4"

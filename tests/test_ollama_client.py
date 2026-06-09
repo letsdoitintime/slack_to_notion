@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -36,7 +37,9 @@ def _reachable_models() -> list[str]:
         return []
 
 
-_LIVE_MODELS = _reachable_models()
+# Live-integration tests are opt-in: set OLLAMA_TESTS=1 to enable.
+# Without the flag the probe is never made, keeping CI runs instant and side-effect-free.
+_LIVE_MODELS = _reachable_models() if os.environ.get("OLLAMA_TESTS") else []
 _PREFERRED_MODEL = next(
     (m for m in _LIVE_MODELS if m.startswith("qwen2.5:")),
     _LIVE_MODELS[0] if _LIVE_MODELS else "",
@@ -192,6 +195,17 @@ class TestGenerateTitle:
             with pytest.raises(OllamaError):
                 OllamaClient().generate_title("blah")
 
+    def test_non_utf8_response_raises_error(self) -> None:
+        @contextmanager
+        def _non_utf8():
+            resp = MagicMock()
+            resp.read.return_value = b"\xff\xfe bad bytes"
+            yield resp
+
+        with patch("urllib.request.urlopen", return_value=_non_utf8()):
+            with pytest.raises(OllamaError):
+                OllamaClient().generate_title("blah")
+
 
 # ── build_ollama_client ───────────────────────────────────────────────────────
 
@@ -245,6 +259,13 @@ class TestBuildOllamaClient:
     def test_returns_none_for_null_section(self) -> None:
         # A bare `ollama:` key in YAML parses to None — must be treated as "off".
         assert build_ollama_client({"ollama": None}) is None
+
+    def test_null_scalars_use_defaults(self) -> None:
+        # `timeout_s:` / `num_thread:` left blank in YAML parse to None.
+        # build_ollama_client must not raise TypeError on float(None)/int(None).
+        client = build_ollama_client({"ollama": {"enabled": True, "timeout_s": None, "num_thread": None}})
+        assert client._timeout == 15.0
+        assert client._num_thread == 6
 
 
 # ── TaskProcessor._derive_title (graceful fallback) ───────────────────────────

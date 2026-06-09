@@ -77,13 +77,16 @@ class OllamaClient:
 
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+                body = resp.read()
         except urllib.error.HTTPError as exc:   # 4xx / 5xx — subclass of URLError
             raise OllamaError(f"HTTP {exc.code}: {exc.reason}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise OllamaUnavailable(str(exc)) from exc
-        except json.JSONDecodeError as exc:
-            raise OllamaError(f"invalid JSON from Ollama: {exc}") from exc
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise OllamaError(f"unreadable response from Ollama: {exc}") from exc
 
         if not isinstance(payload, dict):
             raise OllamaError(f"unexpected response type: {type(payload).__name__}")
@@ -122,10 +125,10 @@ def build_ollama_client(config: dict) -> OllamaClient | None:
     if not cfg.get("enabled", False):
         return None
     client = OllamaClient(
-        base_url=cfg.get("base_url", "http://127.0.0.1:11434"),
-        model=cfg.get("model", "qwen2.5:3b"),
-        timeout=float(cfg.get("timeout_s", 15)),
-        num_thread=int(cfg.get("num_thread", 6)),
+        base_url=cfg.get("base_url") or "http://127.0.0.1:11434",
+        model=cfg.get("model") or "qwen2.5:3b",
+        timeout=float(cfg.get("timeout_s") or 15),
+        num_thread=int(cfg.get("num_thread") or 6),
     )
     logger.info("Ollama title generation enabled (model=%s).", client._model)
     return client

@@ -86,16 +86,28 @@ def _validate_ollama(ollama: object) -> None:
             raise ValueError(f"'ollama.{key}' must be a string.")
 
     timeout = ollama.get("timeout_s")
-    if timeout is not None and (
-        isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-    ):
-        raise ValueError("'ollama.timeout_s' must be a number.")
+    if timeout is not None:
+        if isinstance(timeout, bool):
+            raise ValueError("'ollama.timeout_s' must be a number.")
+        if isinstance(timeout, str):
+            try:
+                float(timeout)
+            except ValueError:
+                raise ValueError("'ollama.timeout_s' must be a number.")
+        elif not isinstance(timeout, (int, float)):
+            raise ValueError("'ollama.timeout_s' must be a number.")
 
     num_thread = ollama.get("num_thread")
-    if num_thread is not None and (
-        isinstance(num_thread, bool) or not isinstance(num_thread, int)
-    ):
-        raise ValueError("'ollama.num_thread' must be an integer.")
+    if num_thread is not None:
+        if isinstance(num_thread, bool):
+            raise ValueError("'ollama.num_thread' must be an integer.")
+        if isinstance(num_thread, str):
+            try:
+                int(num_thread)
+            except ValueError:
+                raise ValueError("'ollama.num_thread' must be an integer.")
+        elif not isinstance(num_thread, int):
+            raise ValueError("'ollama.num_thread' must be an integer.")
 
 
 def _validate_body_fields(body_fields: object) -> None:
