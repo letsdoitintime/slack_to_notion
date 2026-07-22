@@ -1,12 +1,28 @@
-slack-bolt>=1.18.0
-slack-sdk>=3.27.0
-# Floor is 3.x, not 2.x: the two majors send different Notion-Version headers by
+# Floors throughout this file are the exact versions adopted, not the lowest that
+# works: pip resolves only-if-needed, so a lower floor leaves an existing venv on the
+# old version through a plain `pip install -r requirements.txt` and the bump never
+# lands. The proof that older versions were equivalent lives in the tests, not the pin.
+#
+# Capped at the next major on both slack packages: bolt's listener dispatch and the
+# sdk's request shapes are load-bearing here and neither breaks loudly.
+# Bolt runs only the FIRST matching listener for an event and runs it detached from
+# dispatch — src/slack/event_handler.py merges reminders and emoji processing into a
+# single reaction_added handler because of that, and wraps its own body in try/except
+# because a detached listener's exception cannot surface in the dispatch result.
+# Both facts are pinned by tests/test_slack_transport_contract.py.
+slack-bolt>=1.30,<2
+# Pinned alongside bolt, never alone: bolt requires slack_sdk but declares no upper
+# bound, so bumping bolt without it can silently swap the sdk major underneath.
+# The wire shapes this bot depends on (reactions.add taking `timestamp` not `ts`,
+# chat.postMessage being JSON-encoded while the rest are form-encoded) are asserted
+# in the same file.
+slack-sdk>=3.43,<4
+# Floor is 3.1, not 2.x: the two majors send different Notion-Version headers by
 # default (2022-06-28 vs 2025-09-03), so an unbounded floor let two installs of the
 # same file talk different APIs. The header is now pinned in src/notion/client.py, so
 # this bound only has to keep the client's *Python* surface stable — capped at <4
-# because a major may move pages.create off the database_id parent shim.
-# Floor is the version actually installed and verified, not 3.0.0: pip resolves
-# only-if-needed, and 3.0.0 was never exercised here.
+# because a major may move pages.create off the database_id parent shim. 3.1 rather
+# than 3.0.0 because 3.0.0 was never exercised here.
 notion-client>=3.1,<4
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
@@ -19,7 +35,15 @@ pyyaml>=6.0.1
 # a plain `pip install -r requirements.txt`, so the bump would never actually land.
 dateparser>=1.4.1,<2
 aiosqlite>=0.20.0
-aiohttp>=3.9.0
+# NOT unused — do not prune. Nothing in src/ imports aiohttp (the Ollama client uses
+# stdlib urllib), but slack_bolt.app.async_app imports it and slack-bolt does NOT
+# declare it (`pip show slack_bolt` -> Requires: slack_sdk). This line is the only
+# thing that makes AsyncApp importable; without it the bot fails at startup.
+# Capped at the next major because bolt's socket-mode reconnect logic catches aiohttp
+# base classes, and a reparented subclass turns a handled disconnect into a listener
+# loop that dies quietly. The hierarchy is asserted in
+# tests/test_slack_transport_contract.py.
+aiohttp>=3.14,<4
 
 # Testing
 # These floors are tested, not aspirational. The previous `pytest>=8.0.0` /
