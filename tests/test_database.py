@@ -183,22 +183,77 @@ async def test_save_message_with_files_sets_flag(db: DatabaseManager) -> None:
     assert row["has_files"] == 1
 
 
-async def test_bot_message_skipped(db: DatabaseManager) -> None:
+async def test_bot_message_is_recorded_with_its_bot_id(db: DatabaseManager) -> None:
+    """Messages from other bots/integrations are archived like anyone else's.
+
+    They were silently dropped until 2026-07-22 — the table held 0 rows with a
+    non-null slack_bot_id despite the column existing since v1.
+    """
     event = {**_NEW_EVENT, "ts": "44444.000", "bot_id": "B001"}
     await db.save_message(event)
     conn = db._conn_or_raise()
-    async with conn.execute("SELECT COUNT(*) FROM slack_messages") as cur:
-        count = (await cur.fetchone())[0]
-    assert count == 0
+    async with conn.execute(
+        "SELECT slack_bot_id, message_text FROM slack_messages WHERE slack_ts='44444.000'"
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row["slack_bot_id"] == "B001"
+    assert row["message_text"] == "Hello world"
 
 
-async def test_bot_message_subtype_skipped(db: DatabaseManager) -> None:
-    event = {**_NEW_EVENT, "ts": "55555.000", "subtype": "bot_message"}
-    await db.save_message(event)
+async def test_bot_message_subtype_is_recorded(db: DatabaseManager) -> None:
+    """A legacy/webhook post: subtype bot_message, no `user` key at all."""
+    event = {
+        "type": "message",
+        "subtype": "bot_message",
+        "channel": "C100",
+        "ts": "55555.000",
+        "bot_id": "B002",
+        "username": "Deploy Bot",
+        "text": "Build 41 shipped",
+    }
+    await db.save_message(event, user_name="Deploy Bot")
     conn = db._conn_or_raise()
-    async with conn.execute("SELECT COUNT(*) FROM slack_messages") as cur:
-        count = (await cur.fetchone())[0]
-    assert count == 0
+    async with conn.execute(
+        "SELECT * FROM slack_messages WHERE slack_ts='55555.000'"
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row["slack_bot_id"] == "B002"
+    assert row["slack_user_id"] is None      # bot posts have no user
+    assert row["slack_user_name"] == "Deploy Bot"
+    assert row["event_subtype"] == "bot_message"
+
+
+async def test_message_changed_fallback_keeps_the_bot_id(db: DatabaseManager) -> None:
+    """An edit to an unsaved bot post must not land as an authorless row.
+
+    `bot_id` lives on the NESTED message, not the wrapper — reading only the
+    wrapper is what produced the authorless message_changed rows in prod.
+    """
+    edit_event = {
+        "type": "message",
+        "subtype": "message_changed",
+        "channel": "C100",
+        "ts": "66666.999",
+        "message": {
+            "subtype": "bot_message",
+            "ts": "66666.000",
+            "bot_id": "B003",
+            "text": "edited by a bot",
+        },
+    }
+    await db.save_message(edit_event)      # no original row exists → fallback insert
+    conn = db._conn_or_raise()
+    async with conn.execute(
+        "SELECT slack_bot_id, slack_user_id, message_text "
+        "FROM slack_messages WHERE slack_ts='66666.000'"
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row["slack_bot_id"] == "B003"
+    assert row["slack_user_id"] is None
+    assert row["message_text"] == "edited by a bot"
 
 
 # ── slack_messages — edits ────────────────────────────────────────────────────
