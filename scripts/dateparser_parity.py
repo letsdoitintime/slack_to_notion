@@ -46,7 +46,7 @@ import hashlib
 import json
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -81,7 +81,11 @@ def load_corpus(db_path: Path) -> list[str]:
 
 
 def parse_one(text: str) -> dict:
-    """Run the production parse path over *text* and tag the outcome.
+    """Run the raw dateparser call over *text* and tag the outcome.
+
+    This is the entry point for comparing dateparser *versions*: it pins library
+    behaviour without our own filtering on top, so a library change shows up
+    undiluted.
 
     Returns one of three distinguishable shapes:
         {"found": "YYYY-MM-DD"}   a date was parsed
@@ -101,16 +105,44 @@ def parse_one(text: str) -> dict:
     return {"found": dt.strftime("%Y-%m-%d")}
 
 
-def capture(db_path: Path, out_path: Path) -> None:
+def parse_one_entrypoint(text: str) -> dict:
+    """Run the real `parse_due_date` over *text* and tag the outcome the same way.
+
+    This is the entry point for comparing *our own changes* to the parsing rules.
+    `parse_one` above deliberately bypasses them, so it cannot see a filtering
+    change at all -- capture with `--entry parse_due_date` when the diff under
+    test is in `src/utils/due_date_parser.py` rather than in the library.
+
+    This path CANNOT honour RELATIVE_BASE: `parse_due_date` builds its own
+    settings and calls `date.today()` directly, which is exactly the production
+    behaviour worth capturing. So "today"/"tomorrow"/"next week" move with the
+    wall clock here, and two captures taken on different days would differ for
+    that reason alone. The capture records its own date and `diff` refuses to
+    compare unfrozen captures from different days, rather than reporting drift as
+    a finding.
+    """
+    from src.utils.due_date_parser import parse_due_date
+
+    try:
+        return {"found": parse_due_date(text)}
+    except Exception as exc:                      # exceptions are results
+        return {"raised": f"{type(exc).__name__}: {exc}"}
+
+
+ENTRY_POINTS = {"search_dates": parse_one, "parse_due_date": parse_one_entrypoint}
+
+
+def capture(db_path: Path, out_path: Path, entry: str) -> None:
     import dateparser
 
+    parse = ENTRY_POINTS[entry]
     corpus = load_corpus(db_path)
     rows = [
         {
             "i": i,
             # Hash, not text: captures stay shareable without leaking messages.
             "key": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
-            "result": parse_one(text),
+            "result": parse(text),
         }
         for i, text in enumerate(corpus)
     ]
@@ -118,7 +150,12 @@ def capture(db_path: Path, out_path: Path) -> None:
         json.dumps(
             {
                 "dateparser_version": dateparser.__version__,
-                "relative_base": RELATIVE_BASE.isoformat(),
+                "entry": entry,
+                # Only the search_dates entry point is actually frozen; see
+                # parse_one_entrypoint for why the other cannot be.
+                "frozen": entry == "search_dates",
+                "capture_date": date.today().isoformat(),
+                "relative_base": RELATIVE_BASE.isoformat() if entry == "search_dates" else None,
                 "settings": {k: str(v) for k, v in _DATEPARSER_SETTINGS.items()},
                 "rows": rows,
             },
@@ -128,7 +165,7 @@ def capture(db_path: Path, out_path: Path) -> None:
     found = sum(1 for r in rows if r["result"].get("found"))
     raised = sum(1 for r in rows if "raised" in r["result"])
     print(
-        f"captured dateparser {dateparser.__version__}: "
+        f"captured {entry} on dateparser {dateparser.__version__}: "
         f"{len(rows)} texts, {found} with a date, {raised} raised -> {out_path}"
     )
 
@@ -142,6 +179,19 @@ def diff(old_path: Path, new_path: Path) -> int:
         return 2
     if old["settings"] != new["settings"]:
         print("REFUSING TO DIFF: captures used different parser settings.")
+        return 2
+    if old.get("entry") != new.get("entry"):
+        print("REFUSING TO DIFF: captures used different entry points.")
+        return 2
+    if not old.get("frozen", True) and old.get("capture_date") != new.get("capture_date"):
+        # An unfrozen entry point resolves "today"/"next week" against the real
+        # clock, so captures from different days differ for reasons that have
+        # nothing to do with the change under test.
+        print(
+            "REFUSING TO DIFF: unfrozen entry point captured on different days "
+            f"({old.get('capture_date')} vs {new.get('capture_date')}) — "
+            "re-capture both sides today."
+        )
         return 2
 
     print(f"old: dateparser {old['dateparser_version']}  ({len(old['rows'])} texts)")
@@ -178,6 +228,13 @@ def main() -> int:
     cap = sub.add_parser("capture", help="run the parser over the corpus")
     cap.add_argument("--db", type=Path, default=DEFAULT_DB)
     cap.add_argument("--out", type=Path, required=True)
+    cap.add_argument(
+        "--entry",
+        choices=sorted(ENTRY_POINTS),
+        default="search_dates",
+        help="search_dates = compare dateparser VERSIONS (default); "
+             "parse_due_date = compare changes to our own parsing rules",
+    )
 
     dif = sub.add_parser("diff", help="compare two captures")
     dif.add_argument("old", type=Path)
@@ -185,7 +242,7 @@ def main() -> int:
 
     args = ap.parse_args()
     if args.cmd == "capture":
-        capture(args.db, args.out)
+        capture(args.db, args.out, args.entry)
         return 0
     return diff(args.old, args.new)
 
