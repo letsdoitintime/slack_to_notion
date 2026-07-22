@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
-import logging
-
 from notion_client import Client
-from notion_client.errors import APIResponseError
 
-logger = logging.getLogger(__name__)
+# Pin the wire contract explicitly rather than inheriting notion-client's default.
+# The default moves with the library: notion-client 2.x sends 2022-06-28, 3.x sends
+# 2025-09-03. Under 2025-09-03 a database is a container of *data sources*, and
+# `parent: {"database_id": ...}` below is only accepted as a compatibility shim for
+# single-data-source databases — so the header is not cosmetic, it decides whether
+# create_page works at all. Leaving it to the library means two installs from the
+# same requirements.txt can talk different APIs. Verified against the live API on
+# 2026-07-22; pinned by tests/test_notion_client.py.
+NOTION_API_VERSION = "2025-09-03"
 
 
 class NotionClient:
     """Wraps notion_client.Client with higher-level helpers."""
 
     def __init__(self, token: str) -> None:
-        self._client = Client(auth=token)
+        self._client = Client(auth=token, notion_version=NOTION_API_VERSION)
 
     def create_page(
         self,
@@ -25,6 +30,15 @@ class NotionClient:
         """Create a new page inside *database_id* with the given *properties*.
 
         Returns the created page dict, or raises on failure so the caller can handle it.
+
+        Constraint: under the pinned ``2025-09-03`` API a database is a container of
+        *data sources*, and this ``database_id`` parent is accepted only as a
+        compatibility shim for databases with exactly ONE data source. That covers
+        every database this bot is pointed at today (README tells operators to copy
+        the database ID straight from the Notion URL), but pointing it at a
+        multi-data-source database will fail here, and the fix is to resolve and send
+        ``{"data_source_id": ...}`` instead. Unrelated to the version pin — the shim is
+        what the installed client has been using all along.
         """
         payload: dict = {
             "parent": {"database_id": database_id},
@@ -33,19 +47,3 @@ class NotionClient:
         if children:
             payload["children"] = children
         return self._client.pages.create(**payload)
-
-    def get_database_schema(self, database_id: str) -> dict[str, dict]:
-        """Return the property schema of *database_id*.
-
-        Returns an empty dict when the database cannot be retrieved.
-        """
-        try:
-            db = self._client.databases.retrieve(database_id=database_id)
-            return db.get("properties", {})
-        except Exception as exc:
-            logger.error(
-                "Failed to retrieve Notion database schema for %s: %s",
-                database_id,
-                exc,
-            )
-            return {}
