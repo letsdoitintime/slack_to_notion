@@ -3,7 +3,11 @@ slack-sdk>=3.27.0
 notion-client>=2.2.1
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
-dateparser>=1.2.0
+# Capped at the next major: this parses free-form text into the due date written onto
+# real Notion tasks, and a changed parse does not raise -- it just writes a different
+# date. Bumps are verified with scripts/dateparser_parity.py over real message text,
+# not by the suite, which only asserts a handful of synthetic phrases.
+dateparser>=1.4,<2
 aiosqlite>=0.20.0
 aiohttp>=3.9.0
 
