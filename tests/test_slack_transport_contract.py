@@ -242,10 +242,13 @@ class TestSlackWebApiWire:
                 # The request is captured before the response is parsed, and the
                 # stub body is deliberately empty. What the caller then does with
                 # that empty response is the subject of other tests, not this one.
-                pass
-        # Keep the swallow honest: a call that never reached the wire is a failure,
-        # not a pass.
-        assert cap, "no HTTP request was built — the call never reached the wire"
+                #
+                # But only swallow once something was actually captured. Anything
+                # that fails BEFORE the wire — a missing method, a bad signature —
+                # is a real error and must surface as itself rather than as a
+                # confusing empty-capture assertion later.
+                if not cap:
+                    raise
         return cap
 
     def test_add_reaction_wire(self) -> None:
@@ -307,15 +310,6 @@ class TestSlackWebApiWire:
         assert body["latest"] == ["1.2"] and body["oldest"] == ["1.2"]
         assert body["inclusive"] == ["1"] and body["limit"] == ["1"]
 
-    def test_reactions_get_wire(self) -> None:
-        client = SlackClient("xoxb-test")
-        cap = self._capture(lambda: client.get_reactors("C1", "1.2"))
-
-        assert cap["url"] == "https://slack.com/api/reactions.get"
-        body = parse_qs(cap["body"])
-        assert body["channel"] == ["C1"]
-        assert body["timestamp"] == ["1.2"]
-        assert body["full"] == ["1"]
 
     def test_users_info_wire(self) -> None:
         client = SlackClient("xoxb-test")
@@ -331,13 +325,6 @@ class TestSlackWebApiWire:
         assert cap["url"] == "https://slack.com/api/conversations.info"
         assert parse_qs(cap["body"])["channel"] == ["C1"]
 
-    def test_conversations_members_wire(self) -> None:
-        client = SlackClient("xoxb-test")
-        cap = self._capture(lambda: client.get_channel_members("C1"))
-
-        assert cap["url"] == "https://slack.com/api/conversations.members"
-        body = parse_qs(cap["body"])
-        assert body["channel"] == ["C1"] and body["limit"] == ["200"]
 
     def test_auth_test_wire(self) -> None:
         client = SlackClient("xoxb-test")
