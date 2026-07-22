@@ -18,6 +18,7 @@ from .processors import PROCESSOR_REGISTRY
 from .processors.task_processor import TaskProcessor
 from .slack.client import SlackClient
 from .slack.event_handler import register_handlers
+from .slack.reminders import run_reminder_loop
 from .utils.config_loader import load_config
 from .utils.ollama_client import build_ollama_client
 from .utils.user_mapper import UserMapper
@@ -96,9 +97,11 @@ async def _run() -> None:
         ", ".join(f":{m['emoji']}:" for m in config.get("emoji_mappings", [])),
     )
     handler = AsyncSocketModeHandler(app, slack_cfg["app_token"], ping_interval=5)
+    reminder_loop = asyncio.create_task(run_reminder_loop(config, slack_client, db))
     try:
         await handler.start_async()
     finally:
+        reminder_loop.cancel()
         await db.close()
 
 

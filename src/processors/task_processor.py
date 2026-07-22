@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import date
 
 from ..db.database import DatabaseManager
 from ..notion.task_creator import TaskCreator, TaskData, _render_template
@@ -121,6 +122,15 @@ class TaskProcessor(BaseProcessor):
         # ── Extract body fields from message text ─────────────────────────────
         body_fields_cfg: list[dict] = fields_config.get("body_fields", [])
         extracted: dict[str, str] = extract_fields(message_text, body_fields_cfg)
+
+        # Date the reaction was added — usable as {reaction_date} / source: reaction_date.
+        # NOT setdefault: extract_fields already inserts "" for every configured
+        # body_field that has no extract_pattern, so listing reaction_date as a body
+        # field would leave that blank in place — the value would come out empty in
+        # exactly the configuration that asks for it. Only a non-empty extracted
+        # value (a real extract_pattern match) overrides the reaction date.
+        if not extracted.get("reaction_date"):
+            extracted["reaction_date"] = _reaction_date(event)
 
         # ── Assignee: reactor_assignees → user_mapper fallback ────────────────
         assignee_notion_id: str | None = _resolve_reactor_assignee(
@@ -260,6 +270,20 @@ def _escape_slack_mrkdwn(text: str) -> str:
         .replace(">", "&gt;")
         .replace("|", "/")
     )
+
+
+def _reaction_date(event: dict) -> str:
+    """Return the date the reaction was added, as ``YYYY-MM-DD``.
+
+    Uses Slack's ``event_ts`` (epoch seconds) rendered in the *local* timezone of
+    the host running the bot — so set the host TZ to the team's timezone or dates
+    will skew by a day around midnight.  Falls back to today when ``event_ts`` is
+    missing or unparseable.
+    """
+    try:
+        return date.fromtimestamp(float(event["event_ts"])).isoformat()
+    except (KeyError, TypeError, ValueError, OSError, OverflowError):
+        return date.today().isoformat()
 
 
 def _resolve_reactor_assignee(reactor_id: str, mapping: dict) -> str | None:

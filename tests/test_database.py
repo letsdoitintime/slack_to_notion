@@ -30,7 +30,12 @@ async def test_migrate_creates_tables(db: DatabaseManager) -> None:
         tables = {row[0] for row in await cur.fetchall()}
     # sqlite_sequence is auto-created by SQLite for AUTOINCREMENT tables — filter it out.
     user_tables = {t for t in tables if not t.startswith("sqlite_")}
-    assert user_tables == {"processed_tasks", "schema_migrations", "slack_messages"}
+    assert user_tables == {
+        "processed_tasks",
+        "reaction_reminders",
+        "schema_migrations",
+        "slack_messages",
+    }
 
 
 async def test_migrate_idempotent() -> None:
@@ -41,7 +46,7 @@ async def test_migrate_idempotent() -> None:
     conn = db._conn_or_raise()
     async with conn.execute("SELECT COUNT(*) FROM schema_migrations") as cur:
         count = (await cur.fetchone())[0]
-    assert count == 1   # migration v1 recorded exactly once
+    assert count == 3   # migrations v1 + v2 + v3 each recorded exactly once
     await db.close()
 
 
@@ -49,7 +54,7 @@ async def test_migrate_records_version(db: DatabaseManager) -> None:
     conn = db._conn_or_raise()
     async with conn.execute("SELECT version FROM schema_migrations") as cur:
         versions = [row[0] for row in await cur.fetchall()]
-    assert versions == [1]
+    assert versions == [1, 2, 3]
 
 
 # ── processed_tasks — basic deduplication ─────────────────────────────────────

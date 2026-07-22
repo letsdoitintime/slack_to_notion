@@ -10,6 +10,7 @@ from slack_bolt.async_app import AsyncApp
 from ..db.database import DatabaseManager
 from ..processors.base import BaseProcessor
 from ..slack.client import SlackClient
+from . import reminders
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +109,21 @@ def register_handlers(
 
     allowed_reactors: list[str] = config.get("allowed_reactors", []) or []
 
+    reminders_enabled = bool(config.get("reaction_reminders")) and db is not None
+
     @app.event("reaction_added")
     async def handle_reaction_added(event: dict) -> None:  # type: ignore[override]
         reaction: str = event.get("reaction", "")
-        mapping = emoji_map.get(reaction)
-        if not mapping:
-            logger.debug("Ignoring unhandled reaction: :%s:", reaction)
-            return
 
+        # The allowlist gates EVERY action this handler can take, reminders
+        # included, so it is checked FIRST.
+        #
+        # It used to sit below the `not mapping` early-return, which made it
+        # unreachable for reminders in the normal setup: the reminder trigger
+        # emoji is deliberately not in emoji_mappings, so the handler returned
+        # before the allowlist was ever consulted, and any channel member could
+        # make the bot post in-thread @mention nudges. Scheduling a reminder is
+        # the bot acting on someone's behalf exactly as processing an emoji is.
         if allowed_reactors:
             reactor_id: str = event.get("user", "")
             if reactor_id not in allowed_reactors:
@@ -125,6 +133,21 @@ def register_handlers(
                     reactor_id,
                 )
                 return
+
+        # Reminders run independently of emoji_mappings — the trigger emoji is
+        # usually NOT a processor emoji, so this must happen before the
+        # `not mapping` early-return below. Bolt stops after the first matching
+        # reaction_added listener, so both features share this one.
+        if reminders_enabled:
+            try:
+                await reminders.schedule_for_event(event, config, db)
+            except Exception:
+                logger.exception("Failed to schedule reaction reminder.")
+
+        mapping = emoji_map.get(reaction)
+        if not mapping:
+            logger.debug("Ignoring unhandled reaction: :%s:", reaction)
+            return
 
         processor_name: str = mapping.get("processor", "TaskProcessor")
         processor = processors.get(processor_name)
@@ -160,3 +183,4 @@ def register_handlers(
                 processor_name,
                 reaction,
             )
+
