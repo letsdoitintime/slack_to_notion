@@ -1,13 +1,61 @@
-slack-bolt>=1.18.0
-slack-sdk>=3.27.0
-notion-client>=2.2.1
+# Floors throughout this file are the exact versions adopted, not the lowest that
+# works: pip resolves only-if-needed, so a lower floor leaves an existing venv on the
+# old version through a plain `pip install -r requirements.txt` and the bump never
+# lands. The proof that older versions were equivalent lives in the tests, not the pin.
+#
+# Capped at the next major on both slack packages: bolt's listener dispatch and the
+# sdk's request shapes are load-bearing here and neither breaks loudly.
+# Bolt runs only the FIRST matching listener for an event and runs it detached from
+# dispatch — src/slack/event_handler.py merges reminders and emoji processing into a
+# single reaction_added handler because of that, and wraps its own body in try/except
+# because a detached listener's exception cannot surface in the dispatch result.
+# Both facts are pinned by tests/test_slack_transport_contract.py.
+slack-bolt>=1.30,<2
+# Pinned alongside bolt, never alone: bolt requires slack_sdk but declares no upper
+# bound, so bumping bolt without it can silently swap the sdk major underneath.
+# The wire shapes this bot depends on (reactions.add taking `timestamp` not `ts`,
+# chat.postMessage being JSON-encoded while the rest are form-encoded) are asserted
+# in the same file.
+slack-sdk>=3.43,<4
+# Floor is 3.1, not 2.x: the two majors send different Notion-Version headers by
+# default (2022-06-28 vs 2025-09-03), so an unbounded floor let two installs of the
+# same file talk different APIs. The header is now pinned in src/notion/client.py, so
+# this bound only has to keep the client's *Python* surface stable — capped at <4
+# because a major may move pages.create off the database_id parent shim. 3.1 rather
+# than 3.0.0 because 3.0.0 was never exercised here.
+notion-client>=3.1,<4
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
-dateparser>=1.2.0
+# Capped at the next major: this parses free-form text into the due date written onto
+# real Notion tasks, and a changed parse does not raise -- it just writes a different
+# date. Bumps are verified with scripts/dateparser_parity.py over real message text,
+# not by the suite, which only asserts a handful of synthetic phrases.
+# Floor is the exact verified version, not >=1.4: pip's default only-if-needed
+# resolution means a floor of 1.4 leaves an existing deploy sitting on 1.4.0 through
+# a plain `pip install -r requirements.txt`, so the bump would never actually land.
+dateparser>=1.4.1,<2
 aiosqlite>=0.20.0
-aiohttp>=3.9.0
+# NOT unused — do not prune. Nothing in src/ imports aiohttp (the Ollama client uses
+# stdlib urllib), but slack_bolt.app.async_app imports it and slack-bolt does NOT
+# declare it (`pip show slack_bolt` -> Requires: slack_sdk). This line is the only
+# thing that makes AsyncApp importable; without it the bot fails at startup.
+# Capped at the next major because bolt's socket-mode reconnect logic catches aiohttp
+# base classes, and a reparented subclass turns a handled disconnect into a listener
+# loop that dies quietly. The hierarchy is asserted in
+# tests/test_slack_transport_contract.py.
+aiohttp>=3.14,<4
 
 # Testing
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
+# These floors are tested, not aspirational. The previous `pytest>=8.0.0` /
+# `pytest-asyncio>=0.23.0` pair could not collect the suite at all — pytest-asyncio
+# 0.23 crashes with `AttributeError: 'Package' object has no attribute 'obj'` during
+# collection, and it predates the `asyncio_default_fixture_loop_scope` option that
+# pytest.ini sets. Both bounds are majors: pytest-asyncio changes async fixture
+# scoping semantics between majors, which fails silently rather than loudly.
+# Floors are the versions actually adopted, not the lowest that works: pip resolves
+# only-if-needed, so a floor of 9.0 would leave an existing venv on 9.0.3 through a
+# plain `pip install -r requirements.txt` and the bump would never land. For the
+# record, 9.0 + 1.3 is the lowest pair verified to collect the suite at all.
+pytest>=9.1.1,<10
+pytest-asyncio>=1.4,<2
 pytest-mock>=3.12.0
