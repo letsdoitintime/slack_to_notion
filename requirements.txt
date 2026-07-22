@@ -1,6 +1,11 @@
 slack-bolt>=1.18.0
 slack-sdk>=3.27.0
-notion-client>=2.2.1
+# Floor is 3.x, not 2.x: the two majors send different Notion-Version headers by
+# default (2022-06-28 vs 2025-09-03), so an unbounded floor let two installs of the
+# same file talk different APIs. The header is now pinned in src/notion/client.py, so
+# this bound only has to keep the client's *Python* surface stable — capped at <4
+# because a major may move pages.create off the database_id parent shim.
+notion-client>=3.0.0,<4
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
 dateparser>=1.2.0
