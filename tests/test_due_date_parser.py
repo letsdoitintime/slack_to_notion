@@ -64,6 +64,7 @@ class TestRejectsNonDates:
             ("The region must be a valid Canada subdivision (ISO 3166-2)", "3166-02-22"),
             # Ordinary English words matched as weekday/month names.
             ("We are testing the withdrawal method", "next Wednesday"),
+            ("we noticed that the initiation date differs", "next Wednesday"),
             ("this may require minor changes from our end", "May"),
             # Version ranges, counts and percentages.
             ("там же набор из 2-3 значениц максимум", "a March date"),
@@ -117,6 +118,15 @@ class TestStillParsesRealDates:
             "Fix this by 2027-03-15",
             "deploy 2027-01-15 confirmed",
             "due 15/03/2027",
+            # `search_dates` strips the cue and returns a bare "Friday", so these
+            # only work if a bare weekday is accepted. "next Friday" is named in
+            # the module docstring; an earlier revision of the filter broke it.
+            "due Friday",
+            "deadline Monday",
+            "next Friday",
+            "ETA Friday",
+            "deadline: Wednesday",
+            "by Friday",
         ],
     )
     def test_parses(self, text: str) -> None:

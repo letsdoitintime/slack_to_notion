@@ -63,11 +63,22 @@ _NUMERIC_DATE = re.compile(
 )
 
 # Explicit relative expressions — the ones the feature is actually for.
+#
+# A weekday is accepted BARE, without a preceding cue, because `search_dates`
+# strips the cue: "next Friday", "due Friday" and "deadline Monday" all come back
+# with a matched substring of just "Friday". Requiring `next|on|by` inside the
+# match therefore rejected every one of them — including "next Friday", which this
+# module's own docstring advertises as supported.
+#
+# A bare weekday is safe in a way a bare month name is not: it resolves to within a
+# week, so the sanity window keeps it plausible. And the false positive that
+# motivated whole-word matching — "We" in "We are testing…" — still cannot match,
+# because "we" is not a weekday abbreviation ("wed" is the shortest that is).
 _RELATIVE = re.compile(
     rf"\b(?:today|tomorrow|tonight)\b"
-    rf"|\b(?:next|this|coming)\s+(?:{_UNIT}|{_WEEKDAY})\b"
-    rf"|\b(?:in\s+)?(?:a|an|\d{{1,3}})\s+(?:{_UNIT})\b"
-    rf"|\b(?:on|by|before|until)\s+(?:{_WEEKDAY})\b",
+    rf"|\b(?:{_WEEKDAY})\b"
+    rf"|\b(?:next|this|coming)\s+(?:{_UNIT})\b"
+    rf"|\b(?:in\s+)?(?:a|an|\d{{1,3}})\s+(?:{_UNIT})\b",
     re.IGNORECASE,
 )
 

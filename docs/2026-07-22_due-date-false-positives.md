@@ -53,8 +53,17 @@ sufficient; the root cause is that a match was never checked for being date-shap
    0 differences): it was latent, not present, which is precisely why it needs a test
    rather than a corpus number.
 3. **Relative expressions are matched explicitly** — `today`, `tomorrow`, `next week`,
-   `on Monday`, `2 weeks`, `48 hours` — whole-word, which is what stops `We` matching
-   Wednesday.
+   `2 weeks`, `48 hours`, and any bare weekday — whole-word, which is what stops `We`
+   matching Wednesday.
+
+   Weekdays are accepted **bare**, without requiring a `next`/`on`/`by` cue, because
+   `search_dates` *strips the cue*: "next Friday", "due Friday" and "deadline Monday" all
+   come back with a matched substring of just `Friday`. An earlier revision required the
+   cue inside the match and so rejected all of them — including "next Friday", which this
+   module's own docstring advertises as supported. Review caught it. A bare weekday is
+   safe in a way a bare month name is not: it resolves within a week, so the sanity window
+   keeps it plausible, and `we` still cannot match because it is not a weekday
+   abbreviation (`wed` is the shortest that is). No corpus change (34 → 34, 0 rows differ).
 4. **The result must fall within `[today, today + 2 years]`.** Past is not a due date;
    beyond the horizon is a misparsed year.
 5. **Scanning continues past a rejected match** rather than giving up on the first one,

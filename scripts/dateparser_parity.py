@@ -46,7 +46,7 @@ import hashlib
 import json
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -113,9 +113,13 @@ def parse_one_entrypoint(text: str) -> dict:
     change at all -- capture with `--entry parse_due_date` when the diff under
     test is in `src/utils/due_date_parser.py` rather than in the library.
 
-    Note this path resolves relative expressions against the real "now" rather
-    than RELATIVE_BASE, since that is what production does. Capture both sides on
-    the same day.
+    This path CANNOT honour RELATIVE_BASE: `parse_due_date` builds its own
+    settings and calls `date.today()` directly, which is exactly the production
+    behaviour worth capturing. So "today"/"tomorrow"/"next week" move with the
+    wall clock here, and two captures taken on different days would differ for
+    that reason alone. The capture records its own date and `diff` refuses to
+    compare unfrozen captures from different days, rather than reporting drift as
+    a finding.
     """
     from src.utils.due_date_parser import parse_due_date
 
@@ -147,7 +151,11 @@ def capture(db_path: Path, out_path: Path, entry: str) -> None:
             {
                 "dateparser_version": dateparser.__version__,
                 "entry": entry,
-                "relative_base": RELATIVE_BASE.isoformat(),
+                # Only the search_dates entry point is actually frozen; see
+                # parse_one_entrypoint for why the other cannot be.
+                "frozen": entry == "search_dates",
+                "capture_date": date.today().isoformat(),
+                "relative_base": RELATIVE_BASE.isoformat() if entry == "search_dates" else None,
                 "settings": {k: str(v) for k, v in _DATEPARSER_SETTINGS.items()},
                 "rows": rows,
             },
@@ -174,6 +182,16 @@ def diff(old_path: Path, new_path: Path) -> int:
         return 2
     if old.get("entry") != new.get("entry"):
         print("REFUSING TO DIFF: captures used different entry points.")
+        return 2
+    if not old.get("frozen", True) and old.get("capture_date") != new.get("capture_date"):
+        # An unfrozen entry point resolves "today"/"next week" against the real
+        # clock, so captures from different days differ for reasons that have
+        # nothing to do with the change under test.
+        print(
+            "REFUSING TO DIFF: unfrozen entry point captured on different days "
+            f"({old.get('capture_date')} vs {new.get('capture_date')}) — "
+            "re-capture both sides today."
+        )
         return 2
 
     print(f"old: dateparser {old['dateparser_version']}  ({len(old['rows'])} texts)")
