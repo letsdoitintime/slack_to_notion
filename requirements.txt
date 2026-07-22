@@ -8,6 +8,16 @@ aiosqlite>=0.20.0
 aiohttp>=3.9.0
 
 # Testing
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
+# These floors are tested, not aspirational. The previous `pytest>=8.0.0` /
+# `pytest-asyncio>=0.23.0` pair could not collect the suite at all — pytest-asyncio
+# 0.23 crashes with `AttributeError: 'Package' object has no attribute 'obj'` during
+# collection, and it predates the `asyncio_default_fixture_loop_scope` option that
+# pytest.ini sets. Both bounds are majors: pytest-asyncio changes async fixture
+# scoping semantics between majors, which fails silently rather than loudly.
+# Floors are the versions actually adopted, not the lowest that works: pip resolves
+# only-if-needed, so a floor of 9.0 would leave an existing venv on 9.0.3 through a
+# plain `pip install -r requirements.txt` and the bump would never land. For the
+# record, 9.0 + 1.3 is the lowest pair verified to collect the suite at all.
+pytest>=9.1.1,<10
+pytest-asyncio>=1.4,<2
 pytest-mock>=3.12.0
