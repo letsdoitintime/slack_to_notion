@@ -30,6 +30,15 @@ class NotionClient:
         """Create a new page inside *database_id* with the given *properties*.
 
         Returns the created page dict, or raises on failure so the caller can handle it.
+
+        Constraint: under the pinned ``2025-09-03`` API a database is a container of
+        *data sources*, and this ``database_id`` parent is accepted only as a
+        compatibility shim for databases with exactly ONE data source. That covers
+        every database this bot is pointed at today (README tells operators to copy
+        the database ID straight from the Notion URL), but pointing it at a
+        multi-data-source database will fail here, and the fix is to resolve and send
+        ``{"data_source_id": ...}`` instead. Unrelated to the version pin — the shim is
+        what the installed client has been using all along.
         """
         payload: dict = {
             "parent": {"database_id": database_id},
