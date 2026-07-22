@@ -195,6 +195,25 @@ def _validate_reactor_assignees(mapping: dict, index: int) -> None:
             )
 
 
+def _positive_number_or_none(value: object) -> float | None:
+    """Return *value* as a positive float, or None if it is not one.
+
+    Accepts numeric strings, since ${ENV_VAR} placeholders always resolve to
+    strings. Booleans are rejected explicitly — `True` is an int in Python and
+    would otherwise sail through as 1.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError:
+            return None
+    if not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
+
+
 def _validate_reaction_reminders(reminders: object) -> None:
     """Raise ValueError if the optional 'reaction_reminders' section is malformed."""
     if reminders is None:
@@ -239,12 +258,14 @@ def _validate_reaction_reminders(reminders: object) -> None:
                 raise ValueError(
                     f"reaction_reminders[{i}].reminders[{j}] must be a mapping."
                 )
-            minutes = entry.get("after_minutes")
-            if (
-                isinstance(minutes, bool)
-                or not isinstance(minutes, (int, float))
-                or minutes <= 0
-            ):
+            # Numeric strings are accepted because ${ENV_VAR} placeholders resolve
+            # to strings — `after_minutes: ${REMINDER_DELAY}` arrives here as "60".
+            # schedule_for_event already does float(minutes), so rejecting it here
+            # would fail at startup on a value the code handles fine, and would
+            # break the env-based config pattern this repo uses everywhere else.
+            # Same treatment as ollama.timeout_s / ollama.num_thread above.
+            minutes = _positive_number_or_none(entry.get("after_minutes"))
+            if minutes is None:
                 raise ValueError(
                     f"reaction_reminders[{i}].reminders[{j}].after_minutes "
                     "must be a positive number."

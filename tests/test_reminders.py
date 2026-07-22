@@ -486,3 +486,35 @@ async def test_migration_replays_safely_after_an_interrupted_run(tmp_path) -> No
     async with conn.execute("SELECT version FROM schema_migrations") as cur:
         assert [r[0] for r in await cur.fetchall()] == [1, 2, 3]
     await reopened.close()
+
+
+# ── env-provided reminder delays ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("minutes", [60, 60.5, "60", "60.5"])
+def test_after_minutes_accepts_numbers_and_numeric_strings(minutes) -> None:
+    """`after_minutes: ${REMINDER_DELAY}` resolves to a STRING, not a number.
+
+    Env placeholders are resolved before validation and always come back as
+    strings, and `schedule_for_event` already does `float(minutes)`. Rejecting
+    "60" here would fail at startup on a value the code handles fine, and would
+    break the env-based config pattern used everywhere else in this repo.
+    """
+    _validate_reaction_reminders(
+        [{"channels": ["C1"], "trigger_emoji": "x",
+          "reminders": [{"after_minutes": minutes}]}]
+    )
+
+
+@pytest.mark.parametrize("minutes", [0, -5, True, False, "abc", "", None, "0"])
+def test_after_minutes_still_rejects_nonsense(minutes) -> None:
+    """Loosening the type check must not loosen the value check.
+
+    `True` matters specifically: bool is a subclass of int in Python, so without
+    an explicit guard it would pass as 1 minute.
+    """
+    with pytest.raises(ValueError):
+        _validate_reaction_reminders(
+            [{"channels": ["C1"], "trigger_emoji": "x",
+              "reminders": [{"after_minutes": minutes}]}]
+        )

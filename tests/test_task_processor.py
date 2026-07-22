@@ -374,6 +374,57 @@ class TestTaskProcessorProcess:
             "notion_link_reply": reply_cfg,
         }
 
+    async def test_reaction_date_survives_being_declared_as_a_body_field(self) -> None:
+        """`extract_fields` pre-seeds "" for a body field with no extract_pattern.
+
+        Using setdefault left that blank in place, so `source: reaction_date` and
+        `{reaction_date}` came out EMPTY in exactly the configuration that asks
+        for the field. Drives the real process() path so a revert is caught.
+        """
+        slack = self._slack_for_success()
+        creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=creator,
+            config={
+                "confirmation": {"react_with": "white_check_mark"},
+                "fields": {
+                    "parse_due_date": False,
+                    "body_fields": [{"key": "reaction_date", "label": "Reaction date"}],
+                },
+            },
+        )
+
+        assert await processor.process(self._sample_event(), self._sample_mapping())
+
+        task_data = creator.create_task.call_args[0][1]
+        assert task_data.extra["reaction_date"], "reaction_date came through blank"
+
+    async def test_a_real_extract_pattern_overrides_the_reaction_date(self) -> None:
+        """The blank is filled in, but a genuine pattern match still wins."""
+        slack = self._slack_for_success(text="Deadline: 2099-01-02")
+        creator = self._task_creator_for_success()
+        processor = self._make_processor(
+            slack_mock=slack,
+            task_creator_mock=creator,
+            config={
+                "confirmation": {"react_with": "white_check_mark"},
+                "fields": {
+                    "parse_due_date": False,
+                    "body_fields": [{
+                        "key": "reaction_date",
+                        "label": "x",
+                        "extract_pattern": r"Deadline: (\S+)",
+                    }],
+                },
+            },
+        )
+
+        assert await processor.process(self._sample_event(), self._sample_mapping())
+
+        task_data = creator.create_task.call_args[0][1]
+        assert task_data.extra["reaction_date"] == "2099-01-02"
+
     async def test_skips_when_already_confirmed(self) -> None:
         slack = MagicMock()
         slack.has_bot_reaction.return_value = True

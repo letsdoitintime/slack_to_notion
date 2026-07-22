@@ -124,7 +124,13 @@ class TaskProcessor(BaseProcessor):
         extracted: dict[str, str] = extract_fields(message_text, body_fields_cfg)
 
         # Date the reaction was added — usable as {reaction_date} / source: reaction_date.
-        extracted.setdefault("reaction_date", _reaction_date(event))
+        # NOT setdefault: extract_fields already inserts "" for every configured
+        # body_field that has no extract_pattern, so listing reaction_date as a body
+        # field would leave that blank in place — the value would come out empty in
+        # exactly the configuration that asks for it. Only a non-empty extracted
+        # value (a real extract_pattern match) overrides the reaction date.
+        if not extracted.get("reaction_date"):
+            extracted["reaction_date"] = _reaction_date(event)
 
         # ── Assignee: reactor_assignees → user_mapper fallback ────────────────
         assignee_notion_id: str | None = _resolve_reactor_assignee(

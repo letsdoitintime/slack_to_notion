@@ -51,6 +51,15 @@ code leaves the new table sitting unused rather than breaking anything.
   up on, so a permanently broken reminder cannot loop forever.
 - **Survives restarts.** Reminders live in SQLite, and the loop picks up anything due on
   the next poll (~60s).
+- **`after_minutes` accepts numeric strings.** `${ENV_VAR}` placeholders resolve to
+  strings, so `after_minutes: ${REMINDER_DELAY}` arrives as `"60"`. Rejecting that would
+  fail at startup on a value `schedule_for_event` handles fine, and would break the
+  env-based config pattern used everywhere else here. Booleans are still rejected
+  explicitly — `True` is an `int` in Python and would otherwise pass as 1 minute.
+- **`reaction_date` is filled in, not defaulted.** `extract_fields` pre-seeds `""` for
+  every configured `body_field` without an `extract_pattern`, so a `setdefault` left the
+  blank in place and the value came out empty in exactly the configuration that asks for
+  the field. Only a non-empty extracted value overrides it.
 
 ## Tests
 
