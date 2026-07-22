@@ -520,21 +520,29 @@ def test_after_minutes_still_rejects_nonsense(minutes) -> None:
         )
 
 
-# ── allowed_reactors gates reminders too ─────────────────────────────────────
+# ── reminders are open to anyone, scoped by CHANNEL ──────────────────────────
+#
+# Deliberate product behaviour: the nudge works only in the selected channels,
+# and within them anyone may trigger it. `allowed_reactors` restricts who can
+# create Notion tasks — a much heavier action than asking teammates to react —
+# and does NOT apply here. This was raised in review as an authorization gap and
+# kept on purpose, so these tests exist to stop it being "fixed" later.
 
 
-def _reminder_config_with_allowlist() -> dict:
-    """The real-world shape: the trigger emoji is NOT in emoji_mappings."""
-    return {
+def _reminder_config(**overrides) -> dict:
+    """The real-world shape: trigger emoji is NOT in emoji_mappings."""
+    config = {
         "emoji_mappings": [
             {"emoji": "face_with_monocle", "notion_db": "x", "processor": "TaskProcessor"}
         ],
         "allowed_reactors": ["U_ALLOWED"],
         "reaction_reminders": [
-            {"channels": ["C1"], "trigger_emoji": "hmm_parrot",
+            {"channels": ["C_WATCHED"], "trigger_emoji": "hmm_parrot",
              "reminders": [{"after_minutes": 60}]}
         ],
     }
+    config.update(overrides)
+    return config
 
 
 async def _count_reminders(db: DatabaseManager) -> int:
@@ -543,58 +551,59 @@ async def _count_reminders(db: DatabaseManager) -> int:
         return (await cur.fetchone())[0]
 
 
-async def test_disallowed_reactor_cannot_schedule_a_reminder(db: DatabaseManager) -> None:
-    """An allowlisted workspace must not let just anyone trigger @mention nudges.
-
-    The allowlist used to sit below the `not mapping` early-return, so for the
-    normal reminder setup — trigger emoji deliberately absent from
-    emoji_mappings — the handler returned before ever consulting it. Any channel
-    member could make the bot post in-thread @mentions.
-    """
+async def _react(db: DatabaseManager, config: dict, *, user: str, channel: str) -> None:
     from src.slack.event_handler import register_handlers
 
-    app = _FakeApp()
-    register_handlers(app, _reminder_config_with_allowlist(), processors={},
-                      slack_client=None, db=db)
-
-    await app.handlers["reaction_added"][0](
-        {"reaction": "hmm_parrot", "user": "U_INTRUDER",
-         "item": {"channel": "C1", "ts": "1.2"}}
-    )
-
-    assert await _count_reminders(db) == 0, "a non-allowlisted user scheduled a reminder"
-
-
-async def test_allowed_reactor_still_schedules(db: DatabaseManager) -> None:
-    """Guard the other side — the allowlist must not break the feature."""
-    from src.slack.event_handler import register_handlers
-
-    app = _FakeApp()
-    register_handlers(app, _reminder_config_with_allowlist(), processors={},
-                      slack_client=None, db=db)
-
-    await app.handlers["reaction_added"][0](
-        {"reaction": "hmm_parrot", "user": "U_ALLOWED",
-         "item": {"channel": "C1", "ts": "1.2"}}
-    )
-
-    assert await _count_reminders(db) == 1
-
-
-async def test_no_allowlist_configured_means_everyone_may_schedule(
-    db: DatabaseManager,
-) -> None:
-    """Absent allowed_reactors is 'unrestricted', not 'deny all'."""
-    from src.slack.event_handler import register_handlers
-
-    config = _reminder_config_with_allowlist()
-    del config["allowed_reactors"]
     app = _FakeApp()
     register_handlers(app, config, processors={}, slack_client=None, db=db)
-
     await app.handlers["reaction_added"][0](
-        {"reaction": "hmm_parrot", "user": "U_ANYONE",
-         "item": {"channel": "C1", "ts": "1.2"}}
+        {"reaction": "hmm_parrot", "user": user, "item": {"channel": channel, "ts": "1.2"}}
     )
 
+
+async def test_anyone_may_trigger_a_reminder_in_a_watched_channel(
+    db: DatabaseManager,
+) -> None:
+    """Not gated by allowed_reactors — intentionally."""
+    await _react(db, _reminder_config(), user="U_NOT_ON_THE_LIST", channel="C_WATCHED")
     assert await _count_reminders(db) == 1
+
+
+async def test_an_allowlisted_user_may_too(db: DatabaseManager) -> None:
+    await _react(db, _reminder_config(), user="U_ALLOWED", channel="C_WATCHED")
+    assert await _count_reminders(db) == 1
+
+
+async def test_the_channel_list_is_the_scope_control(db: DatabaseManager) -> None:
+    """The load-bearing restriction: an unlisted channel schedules nothing.
+
+    Since the reactor is unrestricted, this is the ONLY thing keeping the nudge
+    out of channels it was never configured for.
+    """
+    await _react(db, _reminder_config(), user="U_ALLOWED", channel="C_NOT_WATCHED")
+    assert await _count_reminders(db) == 0
+
+
+async def test_an_empty_channel_list_fails_closed(db: DatabaseManager) -> None:
+    """A misconfigured rule must schedule nothing, not everywhere."""
+    config = _reminder_config(
+        reaction_reminders=[
+            {"channels": [], "trigger_emoji": "hmm_parrot",
+             "reminders": [{"after_minutes": 60}]}
+        ]
+    )
+    await _react(db, config, user="U_ALLOWED", channel="C_WATCHED")
+    assert await _count_reminders(db) == 0
+
+
+async def test_a_different_emoji_in_a_watched_channel_schedules_nothing(
+    db: DatabaseManager,
+) -> None:
+    from src.slack.event_handler import register_handlers
+
+    app = _FakeApp()
+    register_handlers(app, _reminder_config(), processors={}, slack_client=None, db=db)
+    await app.handlers["reaction_added"][0](
+        {"reaction": "eyes", "user": "U_ANYONE", "item": {"channel": "C_WATCHED", "ts": "1.2"}}
+    )
+    assert await _count_reminders(db) == 0

@@ -115,25 +115,18 @@ def register_handlers(
     async def handle_reaction_added(event: dict) -> None:  # type: ignore[override]
         reaction: str = event.get("reaction", "")
 
-        # The allowlist gates EVERY action this handler can take, reminders
-        # included, so it is checked FIRST.
+        # DELIBERATE: reminders are open to ANYONE and are NOT gated by
+        # `allowed_reactors`. Their scope control is the per-rule `channels` list
+        # — the nudge works in the selected channels and nowhere else, but within
+        # those channels any member may trigger it. That is the intended product
+        # behaviour, not an oversight.
         #
-        # It used to sit below the `not mapping` early-return, which made it
-        # unreachable for reminders in the normal setup: the reminder trigger
-        # emoji is deliberately not in emoji_mappings, so the handler returned
-        # before the allowlist was ever consulted, and any channel member could
-        # make the bot post in-thread @mention nudges. Scheduling a reminder is
-        # the bot acting on someone's behalf exactly as processing an emoji is.
-        if allowed_reactors:
-            reactor_id: str = event.get("user", "")
-            if reactor_id not in allowed_reactors:
-                logger.debug(
-                    "Ignoring :%s: from user %s — not in allowed_reactors.",
-                    reaction,
-                    reactor_id,
-                )
-                return
-
+        # Do not "fix" this by hoisting the allowlist above this block. It has
+        # been flagged as an authorization gap in review and deliberately kept:
+        # `allowed_reactors` restricts who can create Notion tasks, which is a
+        # different and much heavier action than asking teammates to react.
+        # Pinned by tests in tests/test_reminders.py.
+        #
         # Reminders run independently of emoji_mappings — the trigger emoji is
         # usually NOT a processor emoji, so this must happen before the
         # `not mapping` early-return below. Bolt stops after the first matching
@@ -148,6 +141,17 @@ def register_handlers(
         if not mapping:
             logger.debug("Ignoring unhandled reaction: :%s:", reaction)
             return
+
+        # Task creation IS gated — that is the heavy action.
+        if allowed_reactors:
+            reactor_id: str = event.get("user", "")
+            if reactor_id not in allowed_reactors:
+                logger.debug(
+                    "Ignoring :%s: from user %s — not in allowed_reactors.",
+                    reaction,
+                    reactor_id,
+                )
+                return
 
         processor_name: str = mapping.get("processor", "TaskProcessor")
         processor = processors.get(processor_name)
