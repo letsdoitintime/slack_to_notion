@@ -39,10 +39,19 @@ sufficient; the root cause is that a match was never checked for being date-shap
 1. **A month name only counts with a day number attached** — `June 13`, `by 10 July`,
    `May 29`. On its own, "may" is the modal verb far more often than the month, and
    "June Invoice" is a document, not a deadline.
-2. **A numeric date must carry a four-digit year** — `2026-05-22` yes, `10-4` / `2-3` /
-   `1/2` no. There is no structural way to tell `dd-mm` from a range or a count, and on
-   real traffic the bare form produced far more noise than signal. This does cost the
-   occasional genuine `24/07`; that is the right trade here.
+2. **A numeric date must be complete — year, month and day, with a four-digit year.**
+   `2026-05-22` yes; `10-4` / `2-3` / `1/2` no. There is no structural way to tell
+   `dd-mm` from a range or a count, and on real traffic the bare form produced far more
+   noise than signal. This does cost the occasional genuine `24/07`; that is the right
+   trade here.
+
+   Requiring the *day* as well is what stops the same trick sneaking back in near the
+   current year, which review caught: `SDK 2027-1` and `ISO 2027-2` are a version and a
+   standard, but dateparser fills the missing day from today and the result lands inside
+   the horizon check. `ISO 3166-2` is only caught by the window because 3166 is absurd —
+   2027 is not. This class produced **no change on the corpus** (34 before and after,
+   0 differences): it was latent, not present, which is precisely why it needs a test
+   rather than a corpus number.
 3. **Relative expressions are matched explicitly** — `today`, `tomorrow`, `next week`,
    `on Monday`, `2 weeks`, `48 hours` — whole-word, which is what stops `We` matching
    Wednesday.
