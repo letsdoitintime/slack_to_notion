@@ -113,6 +113,20 @@ async def _send_one(slack: SlackClient, reminder: dict) -> bool:
 
     members = await asyncio.to_thread(slack.get_channel_members, channel)
     reactors = await asyncio.to_thread(slack.get_reactors, channel, ts)
+    # Both return None on a failed lookup, which is not the same as "empty" and
+    # must not be treated as data. An unknown member list would silently drop the
+    # reminder; an unknown reactor set would read as "nobody reacted" and mention
+    # the whole channel. Neither is recoverable by guessing — retry instead.
+    if members is None or reactors is None:
+        logger.warning(
+            "Reminder %s: Slack lookup failed (members=%s, reactors=%s) — "
+            "retrying next cycle rather than guessing.",
+            reminder["id"],
+            "ok" if members is not None else "FAILED",
+            "ok" if reactors is not None else "FAILED",
+        )
+        return False
+
     message = await asyncio.to_thread(slack.get_message, channel, ts)
     bot_id = await asyncio.to_thread(slack.get_bot_user_id)
     poster = message.get("user") if message else None

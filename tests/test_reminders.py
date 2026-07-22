@@ -384,3 +384,105 @@ def test_get_reactors_wire() -> None:
     # ping the whole channel instead of nobody.
     assert body["timestamp"] == ["1.2"]
     assert body["full"] == ["1"]      # required, else `reactions[].users` is absent
+
+
+# ── failed Slack lookups must retry, not guess ───────────────────────────────
+
+
+class _FailingSlack:
+    """A SlackClient whose lookups fail the way the real one does on API errors."""
+
+    def __init__(self, *, members=None, reactors=None) -> None:
+        self._members = members
+        self._reactors = reactors
+        self.posted: list[tuple] = []
+
+    def get_channel_members(self, channel):  # noqa: D102
+        return self._members
+
+    def get_reactors(self, channel, ts):     # noqa: D102
+        return self._reactors
+
+    def get_message(self, channel, ts):      # noqa: D102
+        return {"user": "U_POSTER"}
+
+    def get_bot_user_id(self):               # noqa: D102
+        return "U_BOT"
+
+    def is_human(self, user_id):             # noqa: D102
+        return True
+
+    def post_message(self, channel, text, thread_ts=None, broadcast=False):
+        self.posted.append((channel, text, thread_ts))
+        return True
+
+
+_REMINDER_ROW = {
+    "id": 1,
+    "slack_channel": "C1",
+    "slack_ts": "1.2",
+    "message_template": "Waiting on {mentions}",
+}
+
+
+async def test_failed_reactor_lookup_does_not_mention_everyone() -> None:
+    """The dangerous direction: a failed reactions.get must not read as 'nobody reacted'.
+
+    Members minus reactors is the ping list, so an empty set from a *failed*
+    lookup would @mention the entire channel.
+    """
+    slack = _FailingSlack(members=["U_A", "U_B", "U_C"], reactors=None)
+
+    handled = await _send_one(slack, _REMINDER_ROW)
+
+    assert handled is False, "must retry, not mark the reminder handled"
+    assert slack.posted == [], "posted a reminder from a failed lookup"
+
+
+async def test_failed_member_lookup_does_not_silently_drop_the_reminder() -> None:
+    """The quiet direction: an unknown member list must not read as 'nobody left'."""
+    slack = _FailingSlack(members=None, reactors={"U_A"})
+
+    handled = await _send_one(slack, _REMINDER_ROW)
+
+    assert handled is False
+    assert slack.posted == []
+
+
+async def test_genuinely_empty_reactor_set_still_sends() -> None:
+    """Guard the other side — a real 'nobody has reacted' must still nudge."""
+    slack = _FailingSlack(members=["U_A", "U_B", "U_POSTER"], reactors=set())
+
+    handled = await _send_one(slack, _REMINDER_ROW)
+
+    assert handled is True
+    assert len(slack.posted) == 1
+    text = slack.posted[0][1]
+    assert "<@U_A>" in text and "<@U_B>" in text
+    assert "U_POSTER" not in text   # the poster is never nudged
+
+
+async def test_migration_replays_safely_after_an_interrupted_run(tmp_path) -> None:
+    """v3 is an ALTER TABLE; replaying it must not wedge startup.
+
+    Simulates a crash between the schema change and its schema_migrations row:
+    the column exists but the version was never recorded, so the next startup
+    re-runs the migration. Applying it in one transaction is what makes that
+    impossible; this asserts the DB still opens if it ever happened.
+    """
+    db_path = str(tmp_path / "replay.db")
+    db = DatabaseManager(db_path)
+    await db.migrate()
+
+    # Roll the recorded version back without touching the schema.
+    conn = db._conn_or_raise()
+    await conn.execute("DELETE FROM schema_migrations WHERE version = 3")
+    await conn.commit()
+    await db.close()
+
+    reopened = DatabaseManager(db_path)
+    await reopened.migrate()   # must not raise "duplicate column name: attempts"
+    conn = reopened._conn_or_raise()
+    async with conn.execute("SELECT version FROM schema_migrations") as cur:
+        assert [r[0] for r in await cur.fetchall()] == [1, 2, 3]
+    await reopened.close()

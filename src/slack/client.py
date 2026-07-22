@@ -182,10 +182,15 @@ class SlackClient:
             logger.warning("Could not fetch channel name for %s: %s", channel, exc)
             return channel
 
-    def get_channel_members(self, channel: str) -> list[str]:
+    def get_channel_members(self, channel: str) -> list[str] | None:
         """Return all member user IDs of *channel*, following pagination.
 
-        Returns whatever was collected so far on an API error (possibly empty).
+        Returns ``None`` when the lookup fails — NOT an empty or partial list.
+        Callers use this to decide who has not reacted, and a truncated member
+        list is not a smaller answer, it is a wrong one: it silently drops the
+        people the request never reached. A missing scope, a rate limit or a
+        transient failure must be distinguishable from a genuinely empty channel.
+
         Requires the ``channels:read`` (public) / ``groups:read`` (private) scope.
         """
         members: list[str] = []
@@ -202,12 +207,19 @@ class SlackClient:
                     break
         except SlackApiError as exc:
             logger.warning("Could not fetch members for %s: %s", channel, exc)
+            return None
         return members
 
     # ── Reactions ─────────────────────────────────────────────────────────────
 
-    def get_reactors(self, channel: str, ts: str) -> set[str]:
-        """Return the set of user IDs who reacted with ANY emoji to the message."""
+    def get_reactors(self, channel: str, ts: str) -> set[str] | None:
+        """Return the set of user IDs who reacted with ANY emoji to the message.
+
+        Returns ``None`` when the lookup fails — NOT an empty set. This is the
+        dangerous direction: callers subtract reactors from the channel membership
+        to find who to nudge, so an empty set from a *failed* call reads as "nobody
+        has reacted" and would @mention the entire channel.
+        """
         try:
             response = self._client.reactions_get(
                 channel=channel, timestamp=ts, full=True
@@ -219,7 +231,7 @@ class SlackClient:
             return users
         except SlackApiError as exc:
             logger.warning("Could not fetch reactors for %s: %s", ts, exc)
-            return set()
+            return None
 
     def add_reaction(self, channel: str, ts: str, emoji: str) -> bool:
         """Add *emoji* reaction to a message. Returns True on success or if already

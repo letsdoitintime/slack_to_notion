@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -144,8 +145,32 @@ class DatabaseManager:
 
         for version, sql in pending:
             logger.info("Applying DB migration v%d …", version)
-            # executescript() commits any open transaction automatically.
-            await self._conn.executescript(sql)
+            # Each statement plus its schema_migrations row goes in ONE transaction.
+            # executescript() cannot be used here: it COMMITs before running, so a
+            # crash between the schema change and the version row would leave the
+            # migration applied but unrecorded — and the next startup would replay
+            # it. That is survivable for `CREATE TABLE IF NOT EXISTS`, but v3 is an
+            # `ALTER TABLE ADD COLUMN`, which SQLite rejects as a duplicate column
+            # on the second run and would stop the bot from starting at all.
+            # ponytail: naive `;` split — fine for these migrations, none of which
+            # contain a semicolon inside a string or trigger body. If one ever does,
+            # switch to a real statement splitter.
+            for statement in filter(None, (s.strip() for s in sql.split(";"))):
+                try:
+                    await self._conn.execute(statement)
+                except sqlite3.OperationalError as exc:
+                    # Belt and braces for the same failure the transaction above
+                    # prevents: if a DB somehow already has the column (applied by
+                    # an older build, or restored from a backup taken mid-upgrade),
+                    # replaying ADD COLUMN would otherwise stop the bot from
+                    # starting at all. Already-present is the desired end state.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+                    logger.info(
+                        "Migration v%d: %s — already applied, continuing.",
+                        version,
+                        exc,
+                    )
             await self._conn.execute(
                 "INSERT INTO schema_migrations (version) VALUES (?)", (version,)
             )
