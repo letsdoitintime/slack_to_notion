@@ -5,13 +5,17 @@
 # single reaction_added handler because of that, and wraps its own body in try/except
 # because a detached listener's exception cannot surface in the dispatch result.
 # Both facts are pinned by tests/test_slack_transport_contract.py.
-slack-bolt>=1.28,<2
+# Floors throughout this file are the exact versions adopted, not the lowest that
+# works: pip resolves only-if-needed, so a lower floor leaves an existing venv on the
+# old version through a plain `pip install -r requirements.txt` and the bump never
+# lands. The contract tests are what prove the older versions were equivalent.
+slack-bolt>=1.30,<2
 # Pinned alongside bolt, never alone: bolt requires slack_sdk but declares no upper
 # bound, so bumping bolt without it can silently swap the sdk major underneath.
 # The wire shapes this bot depends on (reactions.add taking `timestamp` not `ts`,
 # chat.postMessage being JSON-encoded while the rest are form-encoded) are asserted
 # in the same file.
-slack-sdk>=3.41,<4
+slack-sdk>=3.43,<4
 notion-client>=2.2.1
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
@@ -25,7 +29,7 @@ aiosqlite>=0.20.0
 # base classes, and a reparented subclass turns a handled disconnect into a listener
 # loop that dies quietly. The hierarchy is asserted in
 # tests/test_slack_transport_contract.py.
-aiohttp>=3.13,<4
+aiohttp>=3.14,<4
 
 # Testing
 pytest>=8.0.0
