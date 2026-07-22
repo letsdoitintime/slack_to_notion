@@ -72,6 +72,13 @@ class TestRejectsNonDates:
             ("P2P/СБП RUB ... - 10%", "October"),
             # A bare clock time is not a due date.
             ('"timestamp": "06:42:32"', "tomorrow"),
+            # Year-month tokens near the current year: dateparser invents the day
+            # from today and the result lands inside the horizon, so the sanity
+            # window cannot catch these the way it catches `ISO 3166-2`.
+            ("upgrade to SDK 2027-1", "2027-01-<today's day>"),
+            ("see ISO 2027-2", "2027-02-<today's day>"),
+            ("spec version 2026-12", "2026-12-<today's day>"),
+            ("ticket 2027-3 is blocked", "2027-03-<today's day>"),
         ],
     )
     def test_no_due_date_extracted(self, text: str, was: str) -> None:
@@ -108,6 +115,8 @@ class TestStillParsesRealDates:
             "due by July 1st",
             "target: 10 July",
             "Fix this by 2027-03-15",
+            "deploy 2027-01-15 confirmed",
+            "due 15/03/2027",
         ],
     )
     def test_parses(self, text: str) -> None:

@@ -46,12 +46,21 @@ _MONTH_WITH_DAY = re.compile(
     re.IGNORECASE,
 )
 
-# A numeric date must carry a 4-digit year. Without one there is no way to tell a
-# date from the ranges and counts this traffic is full of — `10-4`, `2-3`, `6-7`,
-# `1/2` all parse as dates and none of them are. That does cost the occasional
-# real `24/07`, which is the right trade here: on real traffic the bare dd/mm form
-# produced far more noise than signal.
-_NUMERIC_DATE = re.compile(r"\b\d{4}\s*[./-]\s*\d{1,2}|\b\d{1,2}\s*[./-]\s*\d{4}\b")
+# A numeric date must be COMPLETE — year, month and day — with a 4-digit year.
+#
+# The 4-digit year is what separates a date from the ranges and counts this traffic
+# is full of: `10-4`, `2-3`, `6-7`, `1/2` all parse as dates and none of them are.
+# That costs the occasional real `24/07`, which is the right trade here.
+#
+# Requiring the day too is what stops the same trick sneaking back in near the
+# current year. `SDK 2027-1` and `ISO 2027-2` are a version and a standard, but
+# dateparser fills the missing day from today and lands inside the horizon check —
+# so a year-month token would be accepted as a due date. `ISO 3166-2` only gets
+# caught by the horizon because 3166 is absurd; 2027 is not.
+_NUMERIC_DATE = re.compile(
+    r"\b\d{4}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{1,2}\b"
+    r"|\b\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{4}\b"
+)
 
 # Explicit relative expressions — the ones the feature is actually for.
 _RELATIVE = re.compile(
