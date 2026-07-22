@@ -518,3 +518,83 @@ def test_after_minutes_still_rejects_nonsense(minutes) -> None:
             [{"channels": ["C1"], "trigger_emoji": "x",
               "reminders": [{"after_minutes": minutes}]}]
         )
+
+
+# ── allowed_reactors gates reminders too ─────────────────────────────────────
+
+
+def _reminder_config_with_allowlist() -> dict:
+    """The real-world shape: the trigger emoji is NOT in emoji_mappings."""
+    return {
+        "emoji_mappings": [
+            {"emoji": "face_with_monocle", "notion_db": "x", "processor": "TaskProcessor"}
+        ],
+        "allowed_reactors": ["U_ALLOWED"],
+        "reaction_reminders": [
+            {"channels": ["C1"], "trigger_emoji": "hmm_parrot",
+             "reminders": [{"after_minutes": 60}]}
+        ],
+    }
+
+
+async def _count_reminders(db: DatabaseManager) -> int:
+    conn = db._conn_or_raise()
+    async with conn.execute("SELECT count(*) FROM reaction_reminders") as cur:
+        return (await cur.fetchone())[0]
+
+
+async def test_disallowed_reactor_cannot_schedule_a_reminder(db: DatabaseManager) -> None:
+    """An allowlisted workspace must not let just anyone trigger @mention nudges.
+
+    The allowlist used to sit below the `not mapping` early-return, so for the
+    normal reminder setup — trigger emoji deliberately absent from
+    emoji_mappings — the handler returned before ever consulting it. Any channel
+    member could make the bot post in-thread @mentions.
+    """
+    from src.slack.event_handler import register_handlers
+
+    app = _FakeApp()
+    register_handlers(app, _reminder_config_with_allowlist(), processors={},
+                      slack_client=None, db=db)
+
+    await app.handlers["reaction_added"][0](
+        {"reaction": "hmm_parrot", "user": "U_INTRUDER",
+         "item": {"channel": "C1", "ts": "1.2"}}
+    )
+
+    assert await _count_reminders(db) == 0, "a non-allowlisted user scheduled a reminder"
+
+
+async def test_allowed_reactor_still_schedules(db: DatabaseManager) -> None:
+    """Guard the other side — the allowlist must not break the feature."""
+    from src.slack.event_handler import register_handlers
+
+    app = _FakeApp()
+    register_handlers(app, _reminder_config_with_allowlist(), processors={},
+                      slack_client=None, db=db)
+
+    await app.handlers["reaction_added"][0](
+        {"reaction": "hmm_parrot", "user": "U_ALLOWED",
+         "item": {"channel": "C1", "ts": "1.2"}}
+    )
+
+    assert await _count_reminders(db) == 1
+
+
+async def test_no_allowlist_configured_means_everyone_may_schedule(
+    db: DatabaseManager,
+) -> None:
+    """Absent allowed_reactors is 'unrestricted', not 'deny all'."""
+    from src.slack.event_handler import register_handlers
+
+    config = _reminder_config_with_allowlist()
+    del config["allowed_reactors"]
+    app = _FakeApp()
+    register_handlers(app, config, processors={}, slack_client=None, db=db)
+
+    await app.handlers["reaction_added"][0](
+        {"reaction": "hmm_parrot", "user": "U_ANYONE",
+         "item": {"channel": "C1", "ts": "1.2"}}
+    )
+
+    assert await _count_reminders(db) == 1

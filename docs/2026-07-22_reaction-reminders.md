@@ -36,6 +36,12 @@ code leaves the new table sitting unused rather than breaking anything.
 
 ## Design points worth knowing
 
+- **`allowed_reactors` gates reminders too, and is checked first.** It used to sit below
+  the `emoji_mappings` early-return, which made it unreachable for reminders in the normal
+  setup: the trigger emoji is deliberately *not* a processor emoji, so the handler returned
+  before the allowlist was ever consulted and any channel member could make the bot post
+  in-thread @mention nudges. Scheduling a reminder is the bot acting on someone's behalf
+  exactly as processing an emoji is.
 - **One listener, not two.** Bolt runs only the *first* matching `reaction_added`
   listener, so reminder scheduling lives inside the existing emoji handler and runs
   *before* the `emoji_mappings` early-return — the trigger emoji is usually not a

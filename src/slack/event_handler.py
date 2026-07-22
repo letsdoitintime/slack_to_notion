@@ -115,10 +115,29 @@ def register_handlers(
     async def handle_reaction_added(event: dict) -> None:  # type: ignore[override]
         reaction: str = event.get("reaction", "")
 
-        # Reaction reminders run first, independently of emoji_mappings — the
-        # trigger emoji is usually NOT a processor emoji, so this must happen
-        # before the `not mapping` early-return below. Bolt stops after the first
-        # matching reaction_added listener, so both features share this one.
+        # The allowlist gates EVERY action this handler can take, reminders
+        # included, so it is checked FIRST.
+        #
+        # It used to sit below the `not mapping` early-return, which made it
+        # unreachable for reminders in the normal setup: the reminder trigger
+        # emoji is deliberately not in emoji_mappings, so the handler returned
+        # before the allowlist was ever consulted, and any channel member could
+        # make the bot post in-thread @mention nudges. Scheduling a reminder is
+        # the bot acting on someone's behalf exactly as processing an emoji is.
+        if allowed_reactors:
+            reactor_id: str = event.get("user", "")
+            if reactor_id not in allowed_reactors:
+                logger.debug(
+                    "Ignoring :%s: from user %s — not in allowed_reactors.",
+                    reaction,
+                    reactor_id,
+                )
+                return
+
+        # Reminders run independently of emoji_mappings — the trigger emoji is
+        # usually NOT a processor emoji, so this must happen before the
+        # `not mapping` early-return below. Bolt stops after the first matching
+        # reaction_added listener, so both features share this one.
         if reminders_enabled:
             try:
                 await reminders.schedule_for_event(event, config, db)
@@ -129,16 +148,6 @@ def register_handlers(
         if not mapping:
             logger.debug("Ignoring unhandled reaction: :%s:", reaction)
             return
-
-        if allowed_reactors:
-            reactor_id: str = event.get("user", "")
-            if reactor_id not in allowed_reactors:
-                logger.debug(
-                    "Ignoring :%s: from user %s — not in allowed_reactors.",
-                    reaction,
-                    reactor_id,
-                )
-                return
 
         processor_name: str = mapping.get("processor", "TaskProcessor")
         processor = processors.get(processor_name)
