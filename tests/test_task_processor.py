@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from src.processors.task_processor import (
     _build_slack_url,
     _clean_slack_text,
     _extract_title,
+    _reaction_date,
     _resolve_reactor_assignee,
 )
 from src.utils.user_mapper import UserMapper
@@ -196,6 +198,20 @@ class TestBuildSlackUrl:
         url = _build_slack_url("C123", "111.222", "999.888")
         assert "thread_ts=999.888" in url
         assert "cid=C123" in url
+
+
+# ── _reaction_date ────────────────────────────────────────────────────────────
+
+class TestReactionDate:
+    def test_uses_event_ts(self) -> None:
+        # Midday UTC — same calendar date in any plausible host timezone.
+        ts = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc).timestamp()
+        assert _reaction_date({"event_ts": f"{ts:.6f}"}) == "2026-07-20"
+
+    def test_falls_back_to_today(self) -> None:
+        today = date.today().isoformat()
+        assert _reaction_date({}) == today
+        assert _reaction_date({"event_ts": "not-a-number"}) == today
 
 
 # ── TaskCreator.build_properties ──────────────────────────────────────────────

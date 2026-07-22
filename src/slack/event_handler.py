@@ -10,6 +10,7 @@ from slack_bolt.async_app import AsyncApp
 from ..db.database import DatabaseManager
 from ..processors.base import BaseProcessor
 from ..slack.client import SlackClient
+from . import reminders
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +109,22 @@ def register_handlers(
 
     allowed_reactors: list[str] = config.get("allowed_reactors", []) or []
 
+    reminders_enabled = bool(config.get("reaction_reminders")) and db is not None
+
     @app.event("reaction_added")
     async def handle_reaction_added(event: dict) -> None:  # type: ignore[override]
         reaction: str = event.get("reaction", "")
+
+        # Reaction reminders run first, independently of emoji_mappings — the
+        # trigger emoji is usually NOT a processor emoji, so this must happen
+        # before the `not mapping` early-return below. Bolt stops after the first
+        # matching reaction_added listener, so both features share this one.
+        if reminders_enabled:
+            try:
+                await reminders.schedule_for_event(event, config, db)
+            except Exception:
+                logger.exception("Failed to schedule reaction reminder.")
+
         mapping = emoji_map.get(reaction)
         if not mapping:
             logger.debug("Ignoring unhandled reaction: :%s:", reaction)
@@ -160,3 +174,4 @@ def register_handlers(
                 processor_name,
                 reaction,
             )
+

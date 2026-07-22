@@ -172,6 +172,7 @@ fields:
   #   priority         — value from emoji_mappings[].priority
   #   task_type        — value from emoji_mappings[].task_type
   #   due_date         — ISO 8601 date parsed from message text (if parse_due_date: true)
+  #   reaction_date    — YYYY-MM-DD date the emoji reaction was added (host timezone)
   #
   # body_fields:
   #   - key: reporter_name
@@ -197,7 +198,7 @@ fields:
   #
   # Available context keys:
   #   task_title, slack_url, reporter_name, assignee_notion_id,
-  #   status, priority, task_type, due_date, channel_name, message_text
+  #   status, priority, task_type, due_date, reaction_date, channel_name, message_text
   #   + any key defined in body_fields above
   notion_fields:
     Name:
@@ -227,6 +228,9 @@ fields:
     #"Due Date":
     #  type: date
     #  source: due_date
+    #"To Start at":
+    #  type: date
+    #  source: reaction_date       # date the emoji reaction was added
     #Channel:
     #  type: rich_text
     #  source: channel_name
@@ -269,3 +273,29 @@ ollama:
   timeout_s: 15               # fall back to first-line title after this many seconds
   num_thread: 6               # CPU threads for inference; 0 = let Ollama decide
   title_language:             # optional, e.g. "en"; blank = match the message language
+
+# ─── Reaction reminders ───────────────────────────────────────────────────────
+# When a trigger emoji is added to a message in a watched channel, schedule one
+# or more reminders. Each reminder, when it fires, re-computes who in the channel
+# has NOT reacted (with any emoji) and posts an in-thread nudge @mentioning them.
+# Only real, active people are pinged — the poster, the bot, other bots/apps, and
+# deactivated accounts are all excluded. Reminders are persisted in SQLite, so
+# they survive a bot restart. Fires within ~60s of the scheduled time.
+#
+# Omit this section entirely to disable the feature. Supports multiple rules
+# (different channels / emojis) and multiple reminders per rule; each reminder
+# recomputes the non-reactor list independently at send time.
+#
+# Requires bot scopes: channels:read (public) or groups:read (private),
+# users:read (to skip bots/deactivated users), reactions:read, and chat:write.
+# The bot must be a member of each channel.
+# Use channel IDs, not names. {mentions} in message_template is replaced with the
+# space-separated @mentions of the non-reactors (omit it and no one is pinged).
+#
+# reaction_reminders:
+#   - channels: ["C05LY9SDVRP"]        # one or more Slack channel IDs
+#     trigger_emoji: "hmm_parrot"      # emoji name, without the surrounding colons
+#     message_template: "Still waiting on {mentions} to react to this. 👀"
+#     reminders:
+#       - after_minutes: 60            # first nudge, 1 hour later
+#       - after_minutes: 180           # optional second nudge, 3 hours later

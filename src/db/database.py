@@ -8,6 +8,8 @@ processed_tasks    — deduplication: one row per (channel, ts, emoji) triple;
                      is removed and re-added to a message.
 slack_messages     — full log of every Slack message/thread post the bot sees,
                      with edit and soft-delete tracking.
+reaction_reminders — one row per scheduled reminder; a background loop fires the
+                     due ones, re-computing non-reactors at send time.
 """
 
 from __future__ import annotations
@@ -65,9 +67,32 @@ CREATE TABLE IF NOT EXISTS slack_messages (
 );
 """
 
+_V2 = """\
+CREATE TABLE IF NOT EXISTS reaction_reminders (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    slack_channel    TEXT    NOT NULL,
+    slack_ts         TEXT    NOT NULL,
+    trigger_emoji    TEXT    NOT NULL,
+    after_minutes    REAL    NOT NULL,
+    message_template TEXT,
+    remind_at        TIMESTAMP NOT NULL,
+    sent_at          TIMESTAMP,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(slack_channel, slack_ts, trigger_emoji, after_minutes)
+);
+"""
+
+# Adds a retry counter to reaction_reminders so a failed Slack post is retried
+# on later poll cycles and eventually given up on (bounded retry, no storm).
+_V3 = """\
+ALTER TABLE reaction_reminders ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+"""
+
 # List of (version, sql) pairs — applied in ascending version order.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
+    (2, _V2),
+    (3, _V3),
 ]
 
 
@@ -302,3 +327,71 @@ class DatabaseManager:
             ),
         )
         await conn.commit()
+
+    # ── reaction_reminders ────────────────────────────────────────────────────
+
+    async def schedule_reminders(
+        self,
+        *,
+        channel: str,
+        ts: str,
+        trigger_emoji: str,
+        message_template: str | None,
+        rows: list[tuple[float, str]],
+    ) -> None:
+        """Insert one reminder row per (after_minutes, remind_at_iso) in *rows*.
+
+        Idempotent per (channel, ts, emoji, after_minutes): re-adding the same
+        trigger emoji to a message does not duplicate its reminders.
+        """
+        conn = self._conn_or_raise()
+        await conn.executemany(
+            """
+            INSERT OR IGNORE INTO reaction_reminders
+                (slack_channel, slack_ts, trigger_emoji,
+                 after_minutes, message_template, remind_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (channel, ts, trigger_emoji, minutes, message_template, remind_at)
+                for minutes, remind_at in rows
+            ],
+        )
+        await conn.commit()
+
+    async def due_reminders(self, now_iso: str) -> list[aiosqlite.Row]:
+        """Return unsent reminders whose remind_at has passed, oldest first."""
+        conn = self._conn_or_raise()
+        async with conn.execute(
+            "SELECT * FROM reaction_reminders "
+            "WHERE sent_at IS NULL AND remind_at <= ? ORDER BY remind_at",
+            (now_iso,),
+        ) as cur:
+            return await cur.fetchall()
+
+    async def mark_reminder_sent(self, reminder_id: int) -> None:
+        """Stamp a reminder as sent so it is not fired again."""
+        conn = self._conn_or_raise()
+        now = datetime.now(timezone.utc).isoformat()
+        await conn.execute(
+            "UPDATE reaction_reminders SET sent_at=? WHERE id=?", (now, reminder_id)
+        )
+        await conn.commit()
+
+    async def bump_reminder_attempt(self, reminder_id: int) -> int:
+        """Increment a reminder's failed-attempt counter and return the new count.
+
+        A reminder stays unsent (so ``due_reminders`` re-selects it) until it
+        either succeeds or the caller gives up after too many attempts.
+        """
+        conn = self._conn_or_raise()
+        await conn.execute(
+            "UPDATE reaction_reminders SET attempts = attempts + 1 WHERE id=?",
+            (reminder_id,),
+        )
+        await conn.commit()
+        async with conn.execute(
+            "SELECT attempts FROM reaction_reminders WHERE id=?", (reminder_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0

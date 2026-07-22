@@ -67,6 +67,7 @@ def _validate(config: dict) -> None:
     _validate_allowed_reactors(config.get("allowed_reactors"))
     _validate_notion_link_reply(config.get("notion_link_reply"))
     _validate_ollama(config.get("ollama"))
+    _validate_reaction_reminders(config.get("reaction_reminders"))
 
 
 def _validate_ollama(ollama: object) -> None:
@@ -192,6 +193,62 @@ def _validate_reactor_assignees(mapping: dict, index: int) -> None:
                 f"emoji_mappings[{index}].reactor_assignees['{slack_id}']"
                 f".notion_user_ids must be a list."
             )
+
+
+def _validate_reaction_reminders(reminders: object) -> None:
+    """Raise ValueError if the optional 'reaction_reminders' section is malformed."""
+    if reminders is None:
+        return
+    if not isinstance(reminders, list):
+        raise ValueError("'reaction_reminders' must be a list of rules.")
+    for i, rule in enumerate(reminders):
+        if not isinstance(rule, dict):
+            raise ValueError(f"reaction_reminders[{i}] must be a mapping.")
+
+        trigger = rule.get("trigger_emoji")
+        if not isinstance(trigger, str) or not trigger.strip():
+            raise ValueError(
+                f"reaction_reminders[{i}].trigger_emoji must be a non-empty string."
+            )
+
+        channels = rule.get("channels")
+        if not isinstance(channels, list) or not channels:
+            raise ValueError(
+                f"reaction_reminders[{i}].channels must be a non-empty list of "
+                "Slack channel IDs."
+            )
+        for j, ch in enumerate(channels):
+            if not isinstance(ch, str) or not ch.strip():
+                raise ValueError(
+                    f"reaction_reminders[{i}].channels[{j}] must be a non-empty string."
+                )
+
+        template = rule.get("message_template")
+        if template is not None and not isinstance(template, str):
+            raise ValueError(
+                f"reaction_reminders[{i}].message_template must be a string."
+            )
+
+        entries = rule.get("reminders")
+        if not isinstance(entries, list) or not entries:
+            raise ValueError(
+                f"reaction_reminders[{i}].reminders must be a non-empty list."
+            )
+        for j, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"reaction_reminders[{i}].reminders[{j}] must be a mapping."
+                )
+            minutes = entry.get("after_minutes")
+            if (
+                isinstance(minutes, bool)
+                or not isinstance(minutes, (int, float))
+                or minutes <= 0
+            ):
+                raise ValueError(
+                    f"reaction_reminders[{i}].reminders[{j}].after_minutes "
+                    "must be a positive number."
+                )
 
 
 def load_config(path: str | Path = "config/config.yaml") -> dict:

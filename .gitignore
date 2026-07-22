@@ -48,3 +48,7 @@ build/
 
 # ─── Misc artefacts ───────────────────────────────────────────────────────────
 =*
+
+# ─── Local agent state (machine-specific, not shared) ─────────────────────────
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
