@@ -32,6 +32,7 @@ Back the DB up first; the bot writes to it continuously::
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -39,24 +40,58 @@ from pathlib import Path
 import yaml
 
 _ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
+
+from dotenv import load_dotenv                                   # noqa: E402
+
+# Imported rather than reimplemented, private name and all: a second copy of the
+# placeholder rule could drift from the one the bot uses, and this whole branch
+# exists because two copies of one rule drifted apart. It raises on an undefined
+# variable, which is the outcome we want — stopping beats repairing the wrong file.
+from src.utils.config_loader import _resolve_env_vars             # noqa: E402
+
+
+def _db_from_config(data: dict) -> Path:
+    """The database path the bot would open, given parsed config *data*."""
+    raw = (data.get("database") or {}).get("path") or "slack_to_notion.db"
+    path = Path(_resolve_env_vars(raw))
+    return path if path.is_absolute() else _ROOT / path
 
 
 def _configured_db() -> str:
     """The database the bot actually uses.
 
     Read straight from the YAML rather than through ``load_config``: this script
-    needs no tokens, and making it fail because an unrelated env var is missing
-    would be its own bug. A hard-coded filename would be worse still — on a
-    deployment that moves the file, the repair would cheerfully report "nothing
-    to repair" against a database nobody uses.
+    needs no tokens, and failing because an unrelated env var is missing would be
+    its own bug. But ``${VAR}`` placeholders still have to resolve exactly as they
+    do for the bot — otherwise this opens a file literally named ``${DB_PATH}``
+    and reports "nothing to repair" against a database nobody uses. A hard-coded
+    filename would be worse still.
     """
-    default = _ROOT / "slack_to_notion.db"
+    load_dotenv(_ROOT / ".env")
     try:
         data = yaml.safe_load((_ROOT / "config" / "config.yaml").read_text()) or {}
     except (OSError, yaml.YAMLError):
-        return str(default)
-    path = Path((data.get("database") or {}).get("path") or default)
-    return str(path if path.is_absolute() else _ROOT / path)
+        return str(_ROOT / "slack_to_notion.db")
+    return str(_db_from_config(data))
+
+
+def _selftest() -> int:
+    os.environ["_REPAIR_SELFTEST_DB"] = "/tmp/from_env.db"
+    assert _db_from_config(
+        {"database": {"path": "${_REPAIR_SELFTEST_DB}"}}
+    ) == Path("/tmp/from_env.db")
+    assert _db_from_config({"database": {"path": "/abs/x.db"}}) == Path("/abs/x.db")
+    assert _db_from_config({"database": {"path": "x.db"}}) == _ROOT / "x.db"
+    assert _db_from_config({}) == _ROOT / "slack_to_notion.db"
+    try:
+        _db_from_config({"database": {"path": "${_REPAIR_UNDEFINED_VAR}"}})
+    except Exception:
+        pass
+    else:
+        raise AssertionError("an undefined var must stop the run, not open a literal path")
+    print("selftest OK")
+    return 0
 
 # Rows carrying a nested bot_id but no slack_bot_id of their own.
 _TARGET = """
@@ -79,10 +114,14 @@ WHERE {_TARGET}
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", help="default: database.path from the config")
+    parser.add_argument("--selftest", action="store_true", help="check helpers, exit")
     parser.add_argument(
         "--apply", action="store_true", help="write the change (default: dry run)"
     )
     args = parser.parse_args()
+
+    if args.selftest:
+        return _selftest()
 
     db_path = args.db or _configured_db()
     print(f"database: {db_path}\n")
