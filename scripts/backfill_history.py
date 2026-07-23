@@ -156,6 +156,29 @@ def _history(client: WebClient, channel: str, oldest: str) -> list[dict]:
         time.sleep(_PAUSE_SECONDS)
 
 
+def _threads_to_walk(
+    parents: list[dict], recorded: dict[str, int], fetched_ts: set
+) -> list[dict]:
+    """Which threads still need a ``conversations.replies`` call.
+
+    Two sources, and the second is easy to miss:
+
+    - Parents returned by history whose recorded reply count falls short of
+      ``reply_count``. A thread already fully recorded needs no API call — one
+      local ``SELECT`` answers it.
+    - Threads the table has replies for whose parent was never fetched, because
+      it predates the window floor. Someone reviving an old thread after the bot
+      was installed leaves exactly that shape: replies recorded, parent absent.
+      History anchored at the floor never returns that parent, so without this
+      the thread is never walked and its dropped bot replies stay missing.
+      Their true ``reply_count`` is unknowable from here, so they are always
+      walked rather than guessed at.
+    """
+    todo = [p for p in parents if recorded.get(p["ts"], 0) < p.get("reply_count", 0)]
+    todo.extend({"ts": ts} for ts in sorted(recorded) if ts not in fetched_ts)
+    return todo
+
+
 def _bot_channels(client: WebClient) -> list[str]:
     """Every conversation the bot is a member of — not just the ones it has
     already recorded something in. A channel the bot joined but that has been
@@ -236,6 +259,18 @@ def _selftest() -> int:
         def get_user_info(self, user_id: str) -> dict:
             self.calls += 1
             return {"id": user_id, "name": "Alice", "email": "a@example.com"}
+
+    # Which threads need walking. A fully-recorded thread costs a SELECT, not a
+    # call; a thread whose parent predates the window is invisible to history and
+    # would otherwise never be walked at all.
+    parents = [{"ts": "done", "reply_count": 2}, {"ts": "short", "reply_count": 5}]
+    recorded = {"done": 2, "short": 1, "orphan": 3}
+    todo = _threads_to_walk(parents, recorded, {"done", "short"})
+    assert [p["ts"] for p in todo] == ["short", "orphan"], todo
+    # An unfetched parent is walked even though replies are already recorded —
+    # its real reply_count cannot be known from here.
+    assert _threads_to_walk([], {"orphan": 9}, set()) == [{"ts": "orphan"}]
+    assert _threads_to_walk([], {"orphan": 9}, {"orphan"}) == []
 
     # Thread pagination — this shipped broken: one page fetched, cursor dropped.
     # It hid itself, because an incomplete thread can never satisfy the
@@ -388,9 +423,7 @@ async def main() -> int:
             (channel,),
         ) as cur:
             recorded = {r[0]: r[1] for r in await cur.fetchall()}
-        parents = [
-            p for p in parents if recorded.get(p["ts"], 0) < p.get("reply_count", 0)
-        ]
+        parents = _threads_to_walk(parents, recorded, {m.get("ts") for m in messages})
         totals["threads"] += len(parents)
 
         if args.include_threads:

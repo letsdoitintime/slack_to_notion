@@ -98,8 +98,12 @@ Guards and shortcuts worth knowing about:
   not from the table, which cannot show a channel the bot joined but that has
   been quiet since. That found one extra channel with 134 messages and no rows.
 - A thread whose replies are all already recorded is skipped on a local `SELECT`
-  rather than an API call. That is 1420 of 12883 threads, and the difference
-  between a 4.3-hour run and a 3.8-hour one.
+  rather than an API call — 1420 of 12883 threads at full history, and 12883 of
+  13050 at the default floor, where nearly everything is already captured.
+- Conversely, a thread whose *parent* predates the window floor is invisible to
+  the history walk: someone reviving an old thread after the bot was installed
+  leaves replies recorded with no fetched parent. Those are walked from the
+  table instead. Five such threads at full history, more at a tighter floor.
 - Both `conversations.history` and `conversations.replies` follow their cursors.
   Review caught the replies walk reading only the first page — a failure that
   hides itself, because a thread left incomplete can never satisfy the
