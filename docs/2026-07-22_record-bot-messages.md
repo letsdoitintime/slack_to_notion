@@ -60,13 +60,48 @@ the human-message path, which must pass both ways.
 
 Full suite: 320 passed, 4 skipped.
 
-## Not done
+## Recovering what was already lost
 
-- **Backfill of missed bot messages.** They are gone from the event stream but
-  recoverable via `conversations.history` per channel. Separate job.
-- **Repair of the 128 authorless rows.** Their `raw_event` still holds the nested
-  `bot_id`, so it is one UPDATE with `json_extract(raw_event, '$.message.bot_id')`
-  — but it rewrites prod data, so it needs its own go-ahead.
+Two scripts, both dry-run by default. One-shots — new rows are correct at write
+time — but safe to re-run.
+
+### `scripts/repair_bot_authorship.py`
+
+Lifts `bot_id` and the display name out of `raw_event` into their columns for the
+orphan `message_changed` rows. Nothing was ever lost, only unread. 130 rows
+across 9 bots (`SUP - Payment Case Closed` 55, `SUP - Opened Cases List` 53,
+`CB RF flow` 10, then a tail of one-offs).
+
+### `scripts/backfill_bot_messages.py`
+
+Re-reads `conversations.history` and inserts the bot messages that were dropped.
+Bot messages only: human ones are already there, and re-inserting them here would
+land rows with no resolved user name — worse than what is already stored. Writes
+go through `DatabaseManager.save_message`, so the write path, the
+`INSERT OR IGNORE` de-duplication and the derived columns are the live ones. Each
+row is stamped `"_backfilled": true` inside `raw_event`, because the envelope is
+reconstructed from a history message rather than received from Slack.
+
+Two guards worth knowing about:
+
+- It **aborts** if `save_message` still skips bot messages. Run from a checkout
+  predating this fix it would otherwise walk every channel, find plenty, and
+  write nothing — a silent no-op that reads as a clean run.
+- Each channel is walked back only as far as its own earliest row, i.e. the
+  window this bot was actually watching.
+
+Measured over the 22 channels in the table: **2355 top-level bot messages are
+missing**, concentrated — three channels hold 2300 of them.
+
+**`conversations.history` returns top-level messages only**, and 91% of this
+table (15132 of 16583 rows) is thread replies, so the default pass sees a
+minority of the corpus by design. `--include-threads` walks
+`conversations.replies` for each of the 1575 parents that have replies, one API
+call each — roughly 30 minutes at the Tier-3 rate limit.
+
+That 91% also explains a shape worth noticing: the case-tracker channel has 433
+recorded replies hanging off 2 recorded parents, because the other 1485 parents
+were bot posts and got dropped.
 
 ## Rollback
 
