@@ -74,6 +74,15 @@ from src.utils.config_loader import load_config                  # noqa: E402
 # conversations.history / .replies are Tier 3 (~50 req/min). Stay under it.
 _PAUSE_SECONDS = 1.2
 _PAGE = 200
+_RATE_LIMIT_RETRIES = 5
+
+# The bot is writing to this database the whole time we are. It is in rollback-
+# journal mode, so a writer locks the file outright — and the live handler wraps
+# its save in a `logger.exception`, meaning a lock it cannot acquire drops a real
+# message and only leaves a log line. Wait a long time rather than let that
+# happen: our writes are milliseconds each, so this ceiling should never be
+# approached, and if it is, being slow beats making the bot lose messages.
+_BUSY_TIMEOUT_MS = 30_000
 
 
 def _is_bot_message(msg: dict) -> bool:
@@ -116,16 +125,20 @@ class _Names:
 
 
 def _call(fn, **kwargs):
-    """One Slack call, retrying once on an explicit rate-limit response."""
-    try:
-        return fn(**kwargs)
-    except SlackApiError as exc:
-        if exc.response.status_code != 429:
-            raise
-        wait = int(exc.response.headers.get("Retry-After", 30))
-        print(f"    rate limited — sleeping {wait}s", flush=True)
-        time.sleep(wait)
-        return fn(**kwargs)
+    """One Slack call, waiting out rate limits.
+
+    Retries several times, not once: a full run is hours long and a single
+    unlucky 429 near the end would otherwise throw away the walk in progress.
+    """
+    for attempt in range(_RATE_LIMIT_RETRIES):
+        try:
+            return fn(**kwargs)
+        except SlackApiError as exc:
+            if exc.response.status_code != 429 or attempt == _RATE_LIMIT_RETRIES - 1:
+                raise
+            wait = int(exc.response.headers.get("Retry-After", 30))
+            print(f"    rate limited — sleeping {wait}s", flush=True)
+            time.sleep(wait)
 
 
 def _history(client: WebClient, channel: str, oldest: str) -> list[dict]:
@@ -272,6 +285,7 @@ async def main() -> int:
     db = DatabaseManager(args.db)
     await db.migrate()
     conn = db._conn_or_raise()
+    await conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
 
     # Per-channel floor: where the table already starts. Absent for a channel
     # the bot has recorded nothing in, which correctly means "from the top".

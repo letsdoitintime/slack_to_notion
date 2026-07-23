@@ -61,7 +61,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    conn = sqlite3.connect(args.db)
+    # The bot is writing to this database while we are. Wait for it rather than
+    # failing the repair on a transient lock.
+    conn = sqlite3.connect(args.db, timeout=30.0)
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute(
