@@ -66,16 +66,27 @@ def register_handlers(
                 logger.info("%s persisted.", subtype)
                 return
 
-            # Skip bot-originated messages.
-            if event.get("bot_id") or subtype == "bot_message":
-                logger.debug("Skipping bot message — channel: %s | ts: %s.", channel, ts)
-                return
-
-            # New message (subtype None or "file_share") — enrich with resolved names.
+            # New message (subtype None, "bot_message" or "file_share") — enrich
+            # with resolved names.
+            #
+            # Bot posts ARE recorded, including this bot's own. They used to be
+            # dropped here, which left the archive with a hole exactly where the
+            # integrations post — while *edits* to those same messages still got
+            # through (`message_changed` is handled above, and the wrapper event
+            # carries no top-level `bot_id`), landing as authorless orphan rows.
             user_id: str | None = event.get("user")
             channel_name: str | None = None
             user_name: str | None = None
             user_email: str | None = None
+
+            # A legacy/webhook bot post has no `user` at all — its display name is
+            # already inline on the event, so read it here rather than spend a
+            # users.info call that would fail. Apps posting with a bot token do
+            # send `user`, and take the normal lookup path below.
+            if not user_id:
+                user_name = (event.get("bot_profile") or {}).get("name") or event.get(
+                    "username"
+                )
 
             if slack_client is not None:
                 try:

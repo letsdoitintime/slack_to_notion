@@ -251,17 +251,17 @@ class DatabaseManager:
         """Persist a Slack message event, routing on ``event["subtype"]``.
 
         Routing:
-        - ``None`` / ``"file_share"``   → INSERT OR IGNORE (new message)
+        - ``None`` / ``"file_share"`` / ``"bot_message"`` → INSERT OR IGNORE (new message)
         - ``"message_changed"``          → UPDATE text, bump edit_count, set edited_at
         - ``"message_deleted"``          → soft-delete (is_deleted = 1)
-        - ``"bot_message"`` / has bot_id → skip
+
+        Bot-originated messages are stored like any other, with ``bot_id`` in
+        ``slack_bot_id`` and (usually) no ``slack_user_id``. They were dropped
+        here until 2026-07-22; the caller in ``event_handler`` had its own,
+        separate skip for the same thing, so both had to go.
         """
         subtype: str | None = event.get("subtype")
         bot_id: str | None = event.get("bot_id")
-
-        # Skip bot-originated messages.
-        if subtype == "bot_message" or bot_id:
-            return
 
         conn = self._conn_or_raise()
         channel: str = event.get("channel", "")
@@ -297,19 +297,31 @@ class DatabaseManager:
                     original_ts,
                 )
                 msg_user: str | None = msg.get("user")
+                # A bot's post carries `bot_id` on the NESTED message, never on
+                # the wrapper — read it from there or the fallback row ends up
+                # with no author at all, which is what the pre-2026-07-22 rows
+                # in this table look like.
+                msg_bot_id: str | None = msg.get("bot_id")
+                # The name is inline on the same nested message. Without it the
+                # row is not merely nameless, it is unrepairable: the repair
+                # script matches rows whose slack_bot_id is NULL, which this one
+                # no longer is, so nothing would ever come back for it.
+                msg_bot_name: str | None = (
+                    (msg.get("bot_profile") or {}).get("name") or msg.get("username")
+                )
                 await conn.execute(
                     """
                     INSERT OR IGNORE INTO slack_messages
                         (event_type, event_subtype,
                          slack_channel, slack_ts, slack_thread_ts,
-                         slack_user_id, message_text,
+                         slack_user_id, slack_user_name, slack_bot_id, message_text,
                          is_thread_reply, raw_event)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         "message", "message_changed",
                         channel, original_ts, msg.get("thread_ts"),
-                        msg_user, new_text,
+                        msg_user, msg_bot_name, msg_bot_id, new_text,
                         1 if (msg.get("thread_ts") and msg.get("thread_ts") != original_ts) else 0,
                         json.dumps(event),
                     ),
