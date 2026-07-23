@@ -58,7 +58,7 @@ at all, which is how a `return` this load-bearing survived. Plus 3 in
 9 of the 11 fail against the unfixed code; the other 2 are regression guards for
 the human-message path, which must pass both ways.
 
-Full suite: 320 passed, 4 skipped.
+Full suite: 321 passed, 4 skipped.
 
 ## Recovering what was already lost
 

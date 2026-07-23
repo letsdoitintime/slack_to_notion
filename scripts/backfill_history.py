@@ -43,7 +43,7 @@ Usage
     python scripts/backfill_history.py                          # dry run
     python scripts/backfill_history.py --include-threads        # dry run, full depth
     python scripts/backfill_history.py --oldest 0               # dry run, all retained
-    python scripts/backfill_history.py --bots-only              # the 2026-07-22 gap alone
+    python scripts/backfill_history.py --bots-only --include-threads   # bot gap only
     python scripts/backfill_history.py --apply --include-threads
 
 Needs ``channels:history`` / ``groups:history`` and ``users:read`` — scopes the
@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -452,7 +453,22 @@ async def main() -> int:
     db_path = args.db or str(_configured_db(config))
     print(f"database: {db_path}")
     db = DatabaseManager(db_path)
-    await db.migrate()
+
+    # migrate() opens the connection itself and writes before we get a handle to
+    # set busy_timeout on it, so that one bootstrap write runs on sqlite3's ~5s
+    # default rather than the 30s the rest of this relies on. Retry rather than
+    # reach into DatabaseManager: a startup crash here is loud and safe to rerun,
+    # but a 3.8h unattended job should not fall over on a five-second lock.
+    for attempt in range(_RATE_LIMIT_RETRIES):
+        try:
+            await db.migrate()
+            break
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == _RATE_LIMIT_RETRIES - 1:
+                raise
+            print(f"    database locked on open — retrying ({exc})", flush=True)
+            await asyncio.sleep(5)
+
     conn = db._conn_or_raise()
     await conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
 
@@ -596,6 +612,17 @@ async def main() -> int:
         f"users looked up {names.lookups}  "
         f"{'written' if args.apply else 'missing'} {totals['new']}"
     )
+    if not args.include_threads:
+        # Says this on every threadless run, not just the one whose usage example
+        # used to overclaim. Most of this table is thread replies, so a summary
+        # ending in "written N" without this line reads as a complete pass when
+        # it covered top-level messages only.
+        print(
+            f"NOTE: thread replies were NOT scanned. {totals['threads']} thread(s) "
+            "here have replies;\n      most of this table is replies, so this pass "
+            "covered top-level messages only. Add --include-threads."
+        )
+
     if not args.apply:
         print("Dry run — nothing written. Re-run with --apply.")
 
