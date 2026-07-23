@@ -72,32 +72,54 @@ orphan `message_changed` rows. Nothing was ever lost, only unread. 130 rows
 across 9 bots (`SUP - Payment Case Closed` 55, `SUP - Opened Cases List` 53,
 `CB RF flow` 10, then a tail of one-offs).
 
-### `scripts/backfill_bot_messages.py`
+### `scripts/backfill_history.py`
 
-Re-reads `conversations.history` and inserts the bot messages that were dropped.
-Bot messages only: human ones are already there, and re-inserting them here would
-land rows with no resolved user name — worse than what is already stored. Writes
+Re-reads `conversations.history` / `.replies` and inserts what is absent. Writes
 go through `DatabaseManager.save_message`, so the write path, the
 `INSERT OR IGNORE` de-duplication and the derived columns are the live ones. Each
 row is stamped `"_backfilled": true` inside `raw_event`, because the envelope is
 reconstructed from a history message rather than received from Slack.
 
-Two guards worth knowing about:
+It records messages. It does **not** create Notion tasks — those still only come
+from a live reaction.
+
+Names are resolved the way the live handler resolves them: `users.info` per
+author, cached to one call per distinct person, and `bot_profile.name` →
+`username` for bot posts, which have no user id to look up. Without that,
+backfilled rows would land nameless and be *worse* than the rows already there —
+which is the only reason the first cut of this script was bot-only.
+
+Guards and shortcuts worth knowing about:
 
 - It **aborts** if `save_message` still skips bot messages. Run from a checkout
   predating this fix it would otherwise walk every channel, find plenty, and
   write nothing — a silent no-op that reads as a clean run.
-- Each channel is walked back only as far as its own earliest row, i.e. the
-  window this bot was actually watching.
+- Channels come from `users.conversations`, i.e. what the bot is actually in —
+  not from the table, which cannot show a channel the bot joined but that has
+  been quiet since. That found one extra channel with 134 messages and no rows.
+- A thread whose replies are all already recorded is skipped on a local `SELECT`
+  rather than an API call. That is 1420 of 12883 threads, and the difference
+  between a 4.3-hour run and a 3.8-hour one.
 
-Measured over the 22 channels in the table: **2355 top-level bot messages are
-missing**, concentrated — three channels hold 2300 of them.
+### What is actually missing
+
+| scope | top-level missing |
+|---|---|
+| bot's own window, bot messages only | 2355 |
+| bot's own window, everything | 2371 |
+| all retained history, everything, 23 channels | **21529** of 22982 |
+
+The first two lines are the useful comparison: only **16** human messages are
+missing from the window the bot was watching. The live capture has been reliable;
+the hole really was bot-shaped. Everything beyond that is history from before the
+bot joined each channel.
 
 **`conversations.history` returns top-level messages only**, and 91% of this
-table (15132 of 16583 rows) is thread replies, so the default pass sees a
-minority of the corpus by design. `--include-threads` walks
-`conversations.replies` for each of the 1575 parents that have replies, one API
-call each — roughly 30 minutes at the Tier-3 rate limit.
+table (15132 of 16583 rows) is thread replies, so a run without
+`--include-threads` covers a minority of the corpus by design. Full depth means
+11463 `conversations.replies` calls at one per thread — **roughly 3.8 hours** at
+the Tier-3 rate limit, which is a floor, not an implementation detail: Slack has
+no bulk thread endpoint and rate-limits per method, so parallelism buys nothing.
 
 That 91% also explains a shape worth noticing: the case-tracker channel has 433
 recorded replies hanging off 2 recorded parents, because the other 1485 parents
