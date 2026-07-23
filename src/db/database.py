@@ -302,19 +302,26 @@ class DatabaseManager:
                 # with no author at all, which is what the pre-2026-07-22 rows
                 # in this table look like.
                 msg_bot_id: str | None = msg.get("bot_id")
+                # The name is inline on the same nested message. Without it the
+                # row is not merely nameless, it is unrepairable: the repair
+                # script matches rows whose slack_bot_id is NULL, which this one
+                # no longer is, so nothing would ever come back for it.
+                msg_bot_name: str | None = (
+                    (msg.get("bot_profile") or {}).get("name") or msg.get("username")
+                )
                 await conn.execute(
                     """
                     INSERT OR IGNORE INTO slack_messages
                         (event_type, event_subtype,
                          slack_channel, slack_ts, slack_thread_ts,
-                         slack_user_id, slack_bot_id, message_text,
+                         slack_user_id, slack_user_name, slack_bot_id, message_text,
                          is_thread_reply, raw_event)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         "message", "message_changed",
                         channel, original_ts, msg.get("thread_ts"),
-                        msg_user, msg_bot_id, new_text,
+                        msg_user, msg_bot_name, msg_bot_id, new_text,
                         1 if (msg.get("thread_ts") and msg.get("thread_ts") != original_ts) else 0,
                         json.dumps(event),
                     ),

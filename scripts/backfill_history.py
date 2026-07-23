@@ -419,6 +419,22 @@ async def main() -> int:
         f" — {len(channels)} channel(s)\n"
     )
 
+    # One class of thread cannot be discovered from a floored run at all: parent
+    # older than the floor, and its only later activity was bot replies. History
+    # anchored at the floor never returns the parent, and because those replies
+    # were the ones being dropped, `recorded` has no row for it either. Nothing
+    # local knows it exists. Say so rather than let the run look exhaustive.
+    # ponytail: warn, don't engineer. Finding them needs a full history walk per
+    # channel filtered on `latest_reply` — worth building only if the floored
+    # run ever becomes the mode people actually use.
+    if args.include_threads and any(str(f) != "0" for _, f in channels):
+        print(
+            "NOTE: --include-threads with a per-channel floor cannot discover a\n"
+            "      thread whose parent predates the floor and whose only later\n"
+            "      activity was bot replies — nothing was recorded, so nothing\n"
+            "      points at it. Use --oldest 0 for an exhaustive pass.\n"
+        )
+
     totals = {"scanned": 0, "bot": 0, "threads": 0, "new": 0}
     # A partial run that exits 0 is indistinguishable from a complete one. Over a
     # multi-hour unattended walk, one channel dying on missing_scope prints a

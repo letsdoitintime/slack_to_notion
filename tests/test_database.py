@@ -256,6 +256,34 @@ async def test_message_changed_fallback_keeps_the_bot_id(db: DatabaseManager) ->
     assert row["message_text"] == "edited by a bot"
 
 
+async def test_message_changed_fallback_keeps_the_bot_name(db: DatabaseManager) -> None:
+    """...and its name, which is the only thing that can ever name that row.
+
+    repair_bot_authorship only matches rows whose slack_bot_id is NULL. Once the
+    fallback fills bot_id but not the name, nothing comes back for it — the row
+    is nameless permanently, with the name sitting in raw_event.
+    """
+    for ts, msg, expected in (
+        ("77777", {"bot_profile": {"name": "Zapier"}, "username": "z"}, "Zapier"),
+        ("88888", {"username": "Jenkins"}, "Jenkins"),
+        ("99999", {}, None),
+    ):
+        await db.save_message({
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C100",
+            "message": {"subtype": "bot_message", "ts": ts, "bot_id": "B00X",
+                        "text": "t", **msg},
+        })
+        conn = db._conn_or_raise()
+        async with conn.execute(
+            "SELECT slack_user_name FROM slack_messages WHERE slack_ts=?", (ts,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None, ts
+        assert row["slack_user_name"] == expected, ts
+
+
 # ── slack_messages — edits ────────────────────────────────────────────────────
 
 

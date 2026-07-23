@@ -104,6 +104,14 @@ Guards and shortcuts worth knowing about:
   the history walk: someone reviving an old thread after the bot was installed
   leaves replies recorded with no fetched parent. Those are walked from the
   table instead. Five such threads at full history, more at a tighter floor.
+- One class of thread is undiscoverable from a floored run and the script says
+  so rather than looking exhaustive: parent older than the floor, and its only
+  later activity was bot replies. History at the floor never returns the parent,
+  and since those replies were exactly what was being dropped, nothing in the
+  table points at it either. `--oldest 0` has no such gap.
+- A partial run exits non-zero. A channel lost to `missing_scope` or a spent
+  retry budget prints one line mid-scroll, and over a multi-hour unattended walk
+  the exit code is the only thing anyone actually reads.
 - Both `conversations.history` and `conversations.replies` follow their cursors.
   Review caught the replies walk reading only the first page — a failure that
   hides itself, because a thread left incomplete can never satisfy the
