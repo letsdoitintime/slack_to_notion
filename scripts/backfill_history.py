@@ -103,13 +103,37 @@ def _as_event(msg: dict, channel: str) -> dict:
     return {**msg, "type": "message", "channel": channel, "_backfilled": True}
 
 
+def _configured_db(config: dict) -> Path:
+    """The database the bot actually uses.
+
+    ``main.py`` reads ``database.path`` relative to its cwd, which supervisor
+    pins to the repo root. Hard-coding the filename here would silently target a
+    different file the moment a deployment changes that setting — with
+    ``--apply`` that means creating, migrating and populating a side database
+    while the real one stays exactly as broken as it was.
+    """
+    path = Path((config.get("database") or {}).get("path") or "slack_to_notion.db")
+    return path if path.is_absolute() else _ROOT / path
+
+
+class _NameLookupFailed(Exception):
+    """users.info failed for a real author, so the message is left unwritten.
+
+    ``SlackClient.get_user_info`` substitutes the user id for the name when the
+    call fails. That is right for the live bot — a task with an odd reporter name
+    beats no task — but poison here: written to a row it is indistinguishable
+    from data, and a re-run will not repair it because that ``(channel, ts)``
+    already exists. Skipping leaves the message for the next run instead.
+    """
+
+
 class _Names:
     """users.info per distinct author, cached — the same names the live handler
     writes. A bot post has no user id to look up, so its name comes off the
     event itself."""
 
-    def __init__(self, slack: SlackClient) -> None:
-        self.slack = slack
+    def __init__(self, client: WebClient) -> None:
+        self._client = client
         self._cache: dict[str, dict] = {}
         self.lookups = 0
 
@@ -119,9 +143,20 @@ class _Names:
             return _bot_name(msg), None
         if user_id not in self._cache:
             self.lookups += 1
-            self._cache[user_id] = self.slack.get_user_info(user_id)
+            try:
+                # Through _call, so rate limits are waited out rather than
+                # turning into a cached wrong name.
+                user = _call(self._client.users_info, user=user_id)["user"]
+            except SlackApiError as exc:
+                raise _NameLookupFailed(
+                    f"{user_id}: {exc.response.get('error')}"
+                ) from exc
+            self._cache[user_id] = {
+                "name": user.get("real_name") or user.get("name") or user_id,
+                "email": (user.get("profile") or {}).get("email"),
+            }
         info = self._cache[user_id]
-        return info.get("name"), info.get("email")
+        return info["name"], info["email"]
 
 
 def _call(fn, **kwargs):
@@ -271,9 +306,10 @@ def _selftest() -> int:
         def __init__(self) -> None:
             self.calls = 0
 
-        def get_user_info(self, user_id: str) -> dict:
+        def users_info(self, **kwargs) -> dict:
             self.calls += 1
-            return {"id": user_id, "name": "Alice", "email": "a@example.com"}
+            return {"user": {"real_name": "Alice",
+                             "profile": {"email": "a@example.com"}}}
 
     # Which threads need walking. A fully-recorded thread costs a SELECT, not a
     # call; a thread whose parent predates the window is invisible to history and
@@ -324,6 +360,33 @@ def _selftest() -> int:
     assert names.resolve({"bot_id": "B1", "username": "Jenkins"}) == ("Jenkins", None)
     assert stub.calls == 1                     # a bot post costs no lookup
 
+    # A failed lookup must never become a name. The live client's fallback is
+    # the user id, which written to a row is indistinguishable from data.
+    class _Resp:
+        status_code = 404
+        headers: dict = {}
+
+        def get(self, key, default=None):
+            return {"error": "user_not_found"}.get(key, default)
+
+    class _FailingUsers:
+        def users_info(self, **kwargs):
+            raise SlackApiError("nope", _Resp())
+
+    failing = _Names(_FailingUsers())
+    try:
+        failing.resolve({"user": "U9"})
+    except _NameLookupFailed:
+        pass
+    else:
+        raise AssertionError("a failed users.info must not yield a name")
+    assert "U9" not in failing._cache          # and must not be cached as one
+
+    # Config-driven db path, so a deployment that moves the file is followed.
+    assert _configured_db({"database": {"path": "/tmp/other.db"}}) == Path("/tmp/other.db")
+    assert _configured_db({"database": {"path": "x.db"}}) == _ROOT / "x.db"
+    assert _configured_db({}) == _ROOT / "slack_to_notion.db"
+
     print("selftest OK")
     return 0
 
@@ -354,7 +417,7 @@ async def _assert_fix_present() -> None:
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default=str(_ROOT / "slack_to_notion.db"))
+    parser.add_argument("--db", help="default: database.path from the config")
     parser.add_argument("--config", default=str(_ROOT / "config" / "config.yaml"))
     parser.add_argument("--channels", nargs="*", help="default: every channel in the DB")
     parser.add_argument(
@@ -381,9 +444,14 @@ async def main() -> int:
     config = load_config(args.config)
     token = config["slack"]["bot_token"]
     client = WebClient(token=token)
-    names = _Names(SlackClient(token))
+    names = _Names(client)
+    # Channel names still go through SlackClient: its fallback is the channel id,
+    # which is truthful, unlike substituting a user id for a person's name.
+    slack = SlackClient(token)
 
-    db = DatabaseManager(args.db)
+    db_path = args.db or str(_configured_db(config))
+    print(f"database: {db_path}")
+    db = DatabaseManager(db_path)
     await db.migrate()
     conn = db._conn_or_raise()
     await conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
@@ -501,10 +569,14 @@ async def main() -> int:
             if not args.apply:
                 continue
             if channel_name is None:
-                channel_name = await asyncio.to_thread(
-                    names.slack.get_channel_name, channel
-                )
-            user_name, user_email = await asyncio.to_thread(names.resolve, msg)
+                channel_name = await asyncio.to_thread(slack.get_channel_name, channel)
+            try:
+                user_name, user_email = await asyncio.to_thread(names.resolve, msg)
+            except _NameLookupFailed as exc:
+                # Leave it for the next run rather than write a name we invented.
+                failures.append(f"{channel} — {msg.get('ts')}: users.info {exc}")
+                new -= 1
+                continue
             await db.save_message(
                 _as_event(msg, channel),
                 channel_name=channel_name,

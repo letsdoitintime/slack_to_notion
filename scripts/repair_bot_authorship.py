@@ -34,6 +34,29 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from pathlib import Path
+
+import yaml
+
+_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _configured_db() -> str:
+    """The database the bot actually uses.
+
+    Read straight from the YAML rather than through ``load_config``: this script
+    needs no tokens, and making it fail because an unrelated env var is missing
+    would be its own bug. A hard-coded filename would be worse still — on a
+    deployment that moves the file, the repair would cheerfully report "nothing
+    to repair" against a database nobody uses.
+    """
+    default = _ROOT / "slack_to_notion.db"
+    try:
+        data = yaml.safe_load((_ROOT / "config" / "config.yaml").read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return str(default)
+    path = Path((data.get("database") or {}).get("path") or default)
+    return str(path if path.is_absolute() else _ROOT / path)
 
 # Rows carrying a nested bot_id but no slack_bot_id of their own.
 _TARGET = """
@@ -55,15 +78,18 @@ WHERE {_TARGET}
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="slack_to_notion.db")
+    parser.add_argument("--db", help="default: database.path from the config")
     parser.add_argument(
         "--apply", action="store_true", help="write the change (default: dry run)"
     )
     args = parser.parse_args()
 
+    db_path = args.db or _configured_db()
+    print(f"database: {db_path}\n")
+
     # The bot is writing to this database while we are. Wait for it rather than
     # failing the repair on a transient lock.
-    conn = sqlite3.connect(args.db, timeout=30.0)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
 
     rows = conn.execute(
