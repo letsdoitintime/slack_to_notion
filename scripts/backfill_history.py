@@ -201,8 +201,22 @@ def _bot_channels(client: WebClient) -> list[str]:
         time.sleep(_PAUSE_SECONDS)
 
 
-def _replies(client: WebClient, channel: str, thread_ts: str) -> list[dict]:
-    """Every reply in a thread, following pagination.
+def _replies(
+    client: WebClient, channel: str, thread_ts: str, oldest: str
+) -> list[dict]:
+    """Every reply in a thread at or after *oldest*, following pagination.
+
+    The floor is forwarded here, not just applied to the history walk. A revived
+    thread has a parent older than the floor, and asking for that thread
+    unqualified returns replies from before the window too — which the write
+    loop, checking only whether a message is absent, would happily insert. A
+    default run would then quietly contain pre-window data from exactly the
+    threads that happen to have been revived, while telling the operator that
+    reaching before the window needs ``--oldest 0``.
+
+    Trimming is also what the orphan-thread walk wants: the replies worth
+    recovering there are the ones the bot should have captured and dropped,
+    which are by definition inside the window.
 
     Threads longer than one page are uncommon but not hypothetical, and skipping
     the cursor would leave them permanently incomplete in a way that hides
@@ -216,7 +230,8 @@ def _replies(client: WebClient, channel: str, thread_ts: str) -> list[dict]:
     messages: list[dict] = []
     cursor = ""
     while True:
-        kwargs = {"channel": channel, "ts": thread_ts, "limit": _PAGE}
+        kwargs = {"channel": channel, "ts": thread_ts, "limit": _PAGE,
+                  "oldest": oldest}
         if cursor:
             kwargs["cursor"] = cursor
         resp = _call(client.conversations_replies, **kwargs)
@@ -281,6 +296,7 @@ def _selftest() -> int:
 
         def conversations_replies(self, **kwargs):
             self.cursors.append(kwargs.get("cursor"))
+            self.oldest = kwargs.get("oldest")
             if not kwargs.get("cursor"):
                 return {"messages": [{"ts": "T"}, {"ts": "r1"}, {"ts": "r2"}],
                         "response_metadata": {"next_cursor": "page2"}}
@@ -291,11 +307,14 @@ def _selftest() -> int:
     saved, _PAUSE_SECONDS = _PAUSE_SECONDS, 0
     try:
         paged = _PagedClient()
-        replies = _replies(paged, "C1", "T")
+        replies = _replies(paged, "C1", "T", "1700000000.0")
     finally:
         _PAUSE_SECONDS = saved
     assert [m["ts"] for m in replies] == ["r1", "r2", "r3"], replies
     assert paged.cursors == [None, "page2"]    # the cursor was actually followed
+    # The window floor reaches the thread call too, or a default run quietly
+    # pulls pre-window replies out of revived threads.
+    assert paged.oldest == "1700000000.0"
 
     stub = _StubSlack()
     names = _Names(stub)
@@ -430,7 +449,9 @@ async def main() -> int:
             for parent in parents:
                 try:
                     messages.extend(
-                        await asyncio.to_thread(_replies, client, channel, parent["ts"])
+                        await asyncio.to_thread(
+                            _replies, client, channel, parent["ts"], oldest
+                        )
                     )
                 except SlackApiError as exc:
                     print(f"  {channel:<14} thread {parent['ts']} — "
