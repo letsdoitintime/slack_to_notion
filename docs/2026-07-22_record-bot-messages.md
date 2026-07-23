@@ -100,6 +100,17 @@ Guards and shortcuts worth knowing about:
 - A thread whose replies are all already recorded is skipped on a local `SELECT`
   rather than an API call. That is 1420 of 12883 threads, and the difference
   between a 4.3-hour run and a 3.8-hour one.
+- Both `conversations.history` and `conversations.replies` follow their cursors.
+  Review caught the replies walk reading only the first page — a failure that
+  hides itself, because a thread left incomplete can never satisfy the
+  already-complete check above, so every later run re-fetches page one and
+  reports success. Covered by `--selftest`.
+- Writes wait up to 30s on a busy database. The bot writes to the same file the
+  whole time, the file is in rollback-journal mode so a writer locks it outright,
+  and the live handler wraps its save in a `logger.exception` — a lock it cannot
+  acquire drops a real message and leaves only a log line. Switching the DB to
+  WAL would remove the contention rather than wait it out, but that is a
+  persistent change to the file and should not be a side effect of a backfill.
 
 ### What is actually missing
 

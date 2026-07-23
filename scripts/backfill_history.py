@@ -179,9 +179,31 @@ def _bot_channels(client: WebClient) -> list[str]:
 
 
 def _replies(client: WebClient, channel: str, thread_ts: str) -> list[dict]:
-    resp = _call(client.conversations_replies, channel=channel, ts=thread_ts, limit=_PAGE)
-    # The first element is the parent, already seen in history.
-    return resp.get("messages", [])[1:]
+    """Every reply in a thread, following pagination.
+
+    Threads longer than one page are uncommon but not hypothetical, and skipping
+    the cursor would leave them permanently incomplete in a way that hides
+    itself: the parent's ``reply_count`` would never match what is recorded, so
+    the already-complete check in the caller could never fire and every future
+    run would re-fetch the same first page and report success.
+
+    The parent is filtered by ts rather than by position — it is returned as the
+    first message and we have already seen it in history.
+    """
+    messages: list[dict] = []
+    cursor = ""
+    while True:
+        kwargs = {"channel": channel, "ts": thread_ts, "limit": _PAGE}
+        if cursor:
+            kwargs["cursor"] = cursor
+        resp = _call(client.conversations_replies, **kwargs)
+        messages.extend(
+            m for m in resp.get("messages", []) if m.get("ts") != thread_ts
+        )
+        cursor = resp.get("response_metadata", {}).get("next_cursor", "")
+        if not cursor:
+            return messages
+        time.sleep(_PAUSE_SECONDS)
 
 
 def _selftest() -> int:
@@ -214,6 +236,31 @@ def _selftest() -> int:
         def get_user_info(self, user_id: str) -> dict:
             self.calls += 1
             return {"id": user_id, "name": "Alice", "email": "a@example.com"}
+
+    # Thread pagination — this shipped broken: one page fetched, cursor dropped.
+    # It hid itself, because an incomplete thread can never satisfy the
+    # already-complete check, so every later run re-fetched page one and passed.
+    class _PagedClient:
+        def __init__(self) -> None:
+            self.cursors: list = []
+
+        def conversations_replies(self, **kwargs):
+            self.cursors.append(kwargs.get("cursor"))
+            if not kwargs.get("cursor"):
+                return {"messages": [{"ts": "T"}, {"ts": "r1"}, {"ts": "r2"}],
+                        "response_metadata": {"next_cursor": "page2"}}
+            # Parent repeated on the later page — filtered by ts, not position.
+            return {"messages": [{"ts": "T"}, {"ts": "r3"}]}
+
+    global _PAUSE_SECONDS
+    saved, _PAUSE_SECONDS = _PAUSE_SECONDS, 0
+    try:
+        paged = _PagedClient()
+        replies = _replies(paged, "C1", "T")
+    finally:
+        _PAUSE_SECONDS = saved
+    assert [m["ts"] for m in replies] == ["r1", "r2", "r3"], replies
+    assert paged.cursors == [None, "page2"]    # the cursor was actually followed
 
     stub = _StubSlack()
     names = _Names(stub)
