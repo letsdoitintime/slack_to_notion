@@ -420,10 +420,15 @@ async def main() -> int:
     )
 
     totals = {"scanned": 0, "bot": 0, "threads": 0, "new": 0}
+    # A partial run that exits 0 is indistinguishable from a complete one. Over a
+    # multi-hour unattended walk, one channel dying on missing_scope prints a
+    # single line mid-scroll and would otherwise still report success.
+    failures: list[str] = []
     for channel, oldest in channels:
         try:
             messages = await asyncio.to_thread(_history, client, channel, oldest)
         except SlackApiError as exc:
+            failures.append(f"{channel} — history: {exc.response.get('error')}")
             print(f"  {channel:<14} SKIPPED — {exc.response.get('error')}")
             continue
 
@@ -454,6 +459,10 @@ async def main() -> int:
                         )
                     )
                 except SlackApiError as exc:
+                    failures.append(
+                        f"{channel} — thread {parent['ts']}: "
+                        f"{exc.response.get('error')}"
+                    )
                     print(f"  {channel:<14} thread {parent['ts']} — "
                           f"{exc.response.get('error')}")
                 await asyncio.to_thread(time.sleep, _PAUSE_SECONDS)
@@ -501,6 +510,13 @@ async def main() -> int:
     )
     if not args.apply:
         print("Dry run — nothing written. Re-run with --apply.")
+
+    if failures:
+        print(f"\nINCOMPLETE — {len(failures)} failure(s), work above was still done:")
+        for failure in failures:
+            print(f"  {failure}")
+        print("Re-run to retry; anything already written is skipped.")
+        return 1
     return 0
 
 
